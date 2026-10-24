@@ -112,10 +112,4 @@ docs/
 
 ---
 
-## 🙏 Kredit
-
-- Script asli: **Chilli Hub** (tienkhanh1) — script gratis komunitas
-- Sumber: [stealabrainrotqaqa/chillihub](https://github.com/stealabrainrotqaqa/chillihub)
-- Repo ini: mirror + audit + dokumentasi Bahasa Indonesia
-
 ⚠️ *Gunakan dengan bijak — risiko ban akun tetap ada seperti semua script Roblox.*
