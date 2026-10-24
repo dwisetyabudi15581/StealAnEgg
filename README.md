@@ -1,6 +1,6 @@
-# 🥚 Steal an Egg — Script Chilli Hub (GRATIS, TANPA KEY)
+# 🥚 Steal an Egg — THORHUB EDITION (GRATIS, TANPA KEY)
 
-Repo ini berisi script **Steal an Egg** buatan Chilli Hub yang sudah saya **audit total dari dalam** (dibongkar dari pembungkus Luraph Obfuscator v15.1) dan diverifikasi:
+Repo ini berisi script **Steal an Egg** yang sudah saya **audit total dari dalam** (dibongkar dari pembungkus Luraph Obfuscator v15.1), diverifikasi, lalu dibungkus ulang jadi versi **ThorHub** — bebas promosi + branding ThorUi:
 
 - ✅ **TANPA KEY SYSTEM** — tidak ada lisensi, whitelist, HWID, atau gerbang kunci apa pun
 - ✅ **TANPA TRACKING** — tidak ada pengiriman data ke server pembuat (beda dengan script repo lama yang ada beacon Firebase)
@@ -11,27 +11,30 @@ Repo ini berisi script **Steal an Egg** buatan Chilli Hub yang sudah saya **audi
 
 ---
 
-## 🧼 Versi CLEAN — Tanpa Promosi (REKOMENDASI)
+## ⚡ Versi CLEAN + THORHUB — Rebrand Petir Thor (REKOMENDASI)
 
-Pakai `StealAnEgg-Clean.lua` kalau mau script jalan **tanpa unsur promosi apa pun** (link & tab Discord, tombol Venyx, branding Chilli Hub / Venyx):
+Pakai `StealAnEgg-Clean.lua` untuk script yang jalan **tanpa unsur promosi apa pun** (link & tab Discord, tombol Venyx) **plus rebrand penuh ke ThorHub**: nama, icon petir ⚡, dan tema warna ThorUi:
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/StealAnEgg-Clean.lua"))()
 ```
 
-**Cara kerjanya** (loader bisa kamu baca sendiri di repo, ±290 baris, berkomentar Bahasa Indonesia):
+**Cara kerjanya** (loader bisa kamu baca sendiri di repo, ±600 baris, berkomentar Bahasa Indonesia):
 
 1. Script inti `StealAnEgg.lua` dijalankan **100% utuh** — semua fitur terjaga
-2. Fetch link Discord dinamis (`.../spicy/DiscordLink`) **diblokir di level HttpGet** — link promo tidak pernah diunduh
-3. Tab "Discord & Venyx", tombol "Copy Discord Link" / "Try Venyx Now" / "Copy Venyx Loader", dan semua branding **disembunyikan dari UI**
+2. Fetch link Discord dinamis (`.../spicy/DiscordLink`) & loader promo Venyx **diblokir di level HttpGet**
+3. Tab "Discord & Venyx", tombol "Copy Discord Link" / "Try Venyx Now" / "Copy Venyx Loader" **disembunyikan dari UI** — dengan aturan presisi sehingga section fitur sah **"Discord Webhook" (webhook milikmu) tetap tampil normal**
 4. Penyalinan link promo ke **clipboard dicegah**
-5. `queue_on_teleport` — setelah Auto Hop / Rejoin, **versi clean yang jalan lagi otomatis**
+5. **Rebrand ThorHub**: semua teks yang terlihat user ("Chilli Hub", "Chilli Library", dst.) ditulis ulang jadi **ThorHub** — internal identifier tidak disentuh supaya fitur tetap stabil
+6. **Icon petir Thor**: icon lama (PNG chili) ternyata di-cache executor di `Venyx/mark1.png` / `Chilli Hub/VenyxMark1.png` — loader menulis PNG petir ⚡ ke path itu *sebelum* script jalan, jadi script memuat icon Thor secara alami
+7. **Tema ThorUi**: palet chili (merah `#FF4848` / oranye `#FF963C`) dipetakan ke palet ThorUi (midnight blue `#0B0E17` + electric blue `#00C3FF` + lightning gold `#FFBE00`) di tingkat instance UI — layout & perilaku tidak berubah; warna status (hijau/merah error, rarity egg) sengaja dibiarkan supaya maknanya tetap benar
+8. `queue_on_teleport` — setelah Auto Hop / Rejoin, **versi ThorHub yang jalan lagi otomatis**
 
-> Yang diblokir dari jaringan **hanya** file promo & invite Discord. Unduhan library UI Venyx dan API server Roblox tetap diizinkan supaya semua fitur berfungsi normal. Pola blokirnya bisa diedit di bagian `KONFIGURASI` paling atas file.
+> Kenapa reskin lewat loader, bukan ganti library UI-nya? Library UI "Venyx" ternyata **tertanam di dalam script** (bukan diunduh saat runtime) dan API-nya jauh lebih luas dari library biasa: canvas gambar bebas (Egg Predictor), Quick Bar, Pin Pad, HUD, sistem State persisten, tab dua sisi. Menu-library sederhana tidak bisa menggantikan semuanya tanpa mem-break fitur. Reskin eksternal ini memberi brand ThorHub dengan **garansi 100% fitur tetap jalan**. Bukti teknisnya di [docs/AUDIT-KEAMANAN.md](docs/AUDIT-KEAMANAN.md) bagian koreksi pasca-audit.
 
 ---
 
-## 🚀 Loadstring — Versi Asli (masih memuat tab promosi)
+## 🚀 Loadstring — Versi Asli (tanpa rebrand, masih memuat tab promosi)
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/StealAnEgg.lua"))()
@@ -104,7 +107,7 @@ Detail lengkap metode pembongkaran dan temuan: [docs/AUDIT-KEAMANAN.md](docs/AUD
 
 ```
 StealAnEgg.lua              ← Script utama (jalan apa adanya, tanpa key)
-StealAnEgg-Clean.lua        ← VERSI CLEAN — loader tanpa promosi (rekomendasi)
+StealAnEgg-Clean.lua        ← VERSI CLEAN + THORHUB — loader rebrand petir (rekomendasi)
 docs/
   FITUR-LENGKAP.md          ← Terjemahan & penjelasan semua fitur (Bahasa Indonesia)
   AUDIT-KEAMANAN.md         ← Laporan audit keamanan & metode pembongkaran

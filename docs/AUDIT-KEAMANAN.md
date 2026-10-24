@@ -61,6 +61,9 @@ Tidak ditemukan:
 - ❌ Pengumpulan HWID/username/IP ke server pihak ketiga
 - ❌ Obfuscator tambahan berbahaya (tidak ada `loadstring` berantai selain UI Venyx)
 
+### ⚠️ Koreksi baris #1 (lihat bagian 7)
+Baris #1 pada tabel di atas ternyata **tidak akurat**: URL `VenyxHub` **tidak pernah di-fetch** saat runtime — string-nya hanya muncul sekali sebagai isi tombol promo "Copy Venyx Loader". Library UI-nya **tertanam di dalam script**. Tidak ada implikasi keamanan baru (justru satu kontak jaringan lebih sedikit dari yang tadinya dikira). Detail di bagian 7.
+
 ### Catatan string HTTP lainnya
 
 - `API nay chi dung duoc tren %s con hoat dong` — pesan internal berbahasa Vietnam ("API ini hanya berfungsi pada %s yang aktif") — pesan error biasa untuk fitur server hop, bukan endpoint.
@@ -125,3 +128,37 @@ Pencarian menyeluruh atas seluruh tabel string untuk indikator sistem kunci:
 | Ukuran | ~6 KB | 826 KB |
 
 Itulah alasan repo lama sudah dihapus dan diganti versi ini sepenuhnya.
+
+---
+
+## 7. Koreksi Pasca-Audit (24 Oktober 2026 — sesi rebrand ThorHub)
+
+Saat membangun rebrand ThorHub, payload tahap-2 diekstrak ulang dengan metode yang sama (hook `loadstring` di tabel internal `[76]`, runtime Luau resmi) dan dianalisis lebih dalam. Hasilnya mengoreksi dan melengkapi audit awal:
+
+### 7.1 Library UI ternyata TERTANAM, bukan diunduh
+
+- String `VenyxHub` hanya muncul **1 kali** di seluruh payload — sebagai isi tombol promo "Copy Venyx Loader" di tab Discord & Venyx. **Tidak ada pemanggilan `game:HttpGet` ke URL itu.**
+- Implementasi library UI-nya ditemukan **menyatu di dalam payload** (lengkap dengan pesan internal berbahasa Vietnam, mis. "Hai State phai thuoc cung Window" = "dua State harus milik Window yang sama").
+- File `VenyxHub` di GitHub `tienkhanh1/Venyx` sendiri hanyalah redirect 108 byte ke loader `api.luarmor.net` — jalur yang tidak pernah dipakai script ini.
+
+**Implikasi keamanan:** tidak ada (justru kontak jaringan lebih sedikit). **Implikasi teknis:** library UI tidak bisa "diganti URL"-nya; rebrand ThorHub dilakukan lewat reskin eksternal (teks, warna, icon) tanpa menyentuh script inti.
+
+### 7.2 URL ke-4 yang terlewat: bootstrap Auto-Load
+
+Ditemukan satu URL tambahan yang lolos dari audit awal:
+
+| URL | Fungsi |
+|-----|--------|
+| `https://raw.githubusercontent.com/tienkhanh1/spicy/main/Chilli.lua` | Di-fetch oleh snippet `queue_on_teleport` internal script saat fitur **Auto Load Script** aktif — mengunduh ulang script utama dari repo pembuat setelah pindah server |
+
+Penilaian: **wajar** (hanya versi hosting ulang dari script yang sama), tapi perlu diketahui. Loader versi clean/ThorHub memblokir pola `tienkhanh1/spicy` dan memasang antrian `queue_on_teleport`-nya sendiri **setelah** script inti, sehingga setelah hop server yang jalan tetap versi clean/ThorHub.
+
+### 7.3 Peta permukaan UI (dipakai membangun rebrand)
+
+Dari payload berhasil dipetakan:
+
+- **API library**: `CreateTab` (dengan `Side="Right"`), `CreateSection`, `CreateToggle`, `CreateDropdown`, `CreateMultiDropdown`, `CreateSlider`, `CreateButton`, `CreateInput`, `CreateText`, `CreateLabel`, `CreateCanvas` (layout gambar bebas untuk Egg Predictor/kartu promo), `CreateState` (state persisten), `CreateActionDropdown` — semuanya dengan elemen ber-`Subscribe`/`Set`/`Get`
+- **Tema inti**: `Card=#0F0F13, CardTop=#18161C, Stroke=#302E38, Text=#F0EEF4, AccentA=#FF4848 (merah chili), AccentB=#FF963C (oranye chili), Good/Work/Bad/Off`
+- **Icon window**: PNG chili 100×100 tertanam sebagai base64 (5.340 char), di-decode saat runtime lalu ditulis ke `Chilli Hub/VenyxMark1.png` dan dipakai via `getcustomasset` (dicek dulu `Venyx/mark1.png` jika sudah ada)
+- **Teks branding yang tampil**: "Chilli Hub" (splash + panel Anti Guard), `<b>Chilli Hub</b>` (kartu promo), "Bring your Chilli config over." (notifikasi migrasi), "Update the Chilli Library..." (peringatan versi)
+- **Internal identifier `Chilli*`** (attribute ScreenGui, nama instance, folder config `ChilliLibrary/`, global `_G.__ChilliAutoLoadQueued`, dll.) — **sengaja tidak diubah** pada rebrand karena dipakai untuk pencarian instance, pembersihan GUI lama, dan persistensi config
