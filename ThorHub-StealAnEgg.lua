@@ -309,12 +309,32 @@ function Repo.Areas()
 end
 
 function Repo.WorldEggs()
+    -- WorldEggs = sarang egg DIMENSI HALLOWEEN (payload asli:
+    -- workspace.HalloweenDimension.WorldEggs, anak model dgn atribut
+    -- HalloweenEggUid + StealPrompt). Fallback lama tetap disediakan.
+    local dim = Repo.HalloweenDim()
+    if dim then
+        local f = dim:FindFirstChild("WorldEggs")
+        if f then return f end
+    end
     local w = Repo.World()
     if w then
         local f = w:FindFirstChild("WorldEggs")
         if f then return f end
     end
     return workspace:FindFirstChild("WorldEggs")
+end
+
+function Repo.HalloweenDim()
+    return workspace:FindFirstChild("HalloweenDimension")
+end
+
+function Repo.HalloweenSafeZone()
+    -- SafeZone khusus dimensi Halloween, fallback SafeZone dunia utama
+    local dim = Repo.HalloweenDim()
+    local f = dim and dim:FindFirstChild("SafeZone", true)
+    if f and f:IsA("BasePart") then return f end
+    return Repo.SafeZone()
 end
 
 function Repo.Plots()
@@ -584,17 +604,39 @@ function Repo.IndexMissing(name)
 end
 
 -- ==== H. Field egg snapshot (RF) ====
+-- Sumber utama data egg area dunia utama (payload asli memanggil
+-- RF/EggWorld/AskFieldEggSnapshot lalu membaca .Records).
+-- NON-BLOCKING: invoke dijalankan di task terpisah + guard "pending"
+-- supaya pemanggil tidak pernah menggantung menunggu server.
 local snapCache, snapAt = nil, -math.huge
-function Repo.FieldSnapshot(maxAge)
+local snapPending, snapFailed = false, 0
+function Repo.FieldSnapshot(maxAge, force)
     local now = os.clock()
-    if snapCache and now - snapAt < (maxAge or 2) then return snapCache end
-    local res = Repo.Invoke("RF/EggWorld/AskFieldEggSnapshot")
-    if type(res) == "table" then
-        snapCache = res
-        snapAt = now
-        return res
+    if not force and snapCache and now - snapAt < (maxAge or 2) then
+        return snapCache
     end
+    if snapPending then return snapCache end
+    if snapFailed >= 5 and snapCache and now - snapAt < 15 then
+        -- remote tampaknya tak tersedia: pelankan percobaan ulang
+        return snapCache
+    end
+    snapPending = true
+    task.spawn(function()
+        local ok, res = pcall(Repo.Invoke, "RF/EggWorld/AskFieldEggSnapshot")
+        if ok and type(res) == "table" and type(res.Records) == "table" then
+            snapCache = res
+            snapAt = os.clock()
+            snapFailed = 0
+        else
+            snapFailed = snapFailed + 1
+        end
+        snapPending = false
+    end)
     return snapCache
+end
+
+function Repo.SnapshotOK()
+    return type(snapCache) == "table" and type(snapCache.Records) == "table"
 end
 
 -- ==== I. Malam / siklus area ====
@@ -1057,8 +1099,10 @@ end
 
 --════════════ PART: p3_farm.lua ════════════
 --────────────────────────────[ EGG STATE (native) ]────────────────────────────
--- Pengganti "EggState" internal script asli, dibangun dari data yang
--- bisa dibaca client: replica Save (jika ketemu) + WorldEggs + snapshot RF.
+-- Pengganti "EggState" internal script asli. Data egg area dunia utama
+-- datang dari RF/EggWorld/AskFieldEggSnapshot (.Records) persis seperti
+-- script asli; dimensi Halloween discan dari folder HalloweenDimension.
+-- WorldEggs; egg base pemain lain dibaca dari PlacedEggRenders (root).
 
 local EggState = {}
 
@@ -1100,12 +1144,24 @@ end
 
 -- ==== helper pemilik & nama egg di base ====
 local function renderOwnerUid(m)
-    for _, attr in ipairs({ "Uid", "OwnerUid", "PlayerUid", "Owner" }) do
+    -- Nama render mengandung UserId pemilik (pola asli: find(uid));
+    -- atribut "Uid" adalah id EGG, bukan pemilik, jadi jangan dipakai.
+    for _, attr in ipairs({ "OwnerUid", "PlayerUid", "Owner" }) do
         local v = m:GetAttribute(attr)
         if v and tostring(v) ~= "" then return tostring(v) end
     end
-    local digits = string.match(m.Name, "^(%d+)")
-    return digits or ""
+    if #m.Name == 32 then return "" end -- GUID: bukan render pemain
+    local digits = {}
+    for run in string.gmatch(m.Name, "%d+") do
+        if #run >= 5 then table.insert(digits, run) end
+    end
+    for _, run in ipairs(digits) do
+        local num = tonumber(run)
+        if num and P(function() return Players:GetPlayerByUserId(num) end) then
+            return run
+        end
+    end
+    return digits[1] or ""
 end
 
 local ownerNameCache = {}
@@ -1190,32 +1246,183 @@ local function makeEggEntry(model, prompt, kind, ownerUid)
     }
 end
 
-local function collectFieldEggs(folder, out, seen, depth)
-    if not folder or depth > 2 then return end
-    for _, model in ipairs(folder:GetChildren()) do
-        local prompt = P(function() return model:FindFirstChild("StealPrompt", true) end)
+-- posisi model apa pun (Model -> pivot; part -> CFrame)
+local function modelPos(m)
+    return P(function()
+        if m:IsA("Model") then return m:GetPivot().Position else return m.CFrame.Position end
+    end)
+end
+
+-- model egg yang sedang dipegang pemain? (weld ke karakter)
+local function weldCarrier(m)
+    return P(function()
+        for _, j in ipairs(m:GetDescendants()) do
+            if j:IsA("JointInstance") or j:IsA("WeldConstraint") or j:IsA("RigidConstraint") then
+                local p0, p1 = j.Part0, j.Part1
+                for _, part in ipairs({ p0, p1 }) do
+                    if typeof(part) == "Instance" and not part:IsDescendantOf(m) then
+                        local anc = part:FindFirstAncestorOfClass("Model")
+                        if anc and anc ~= m then
+                            local plr = Players:GetPlayerFromCharacter(anc)
+                            if plr then return plr.Character end
+                        end
+                    end
+                end
+            end
+        end
+        return nil
+    end)
+end
+
+-- instance model egg area berdasar Uid (slot di AreaEggSlotsClient / GUID di root)
+local function slotModelOf(uid)
+    return P(function()
+        return workspace:FindFirstChild(uid)
+            or (Repo.AreaSlots() and Repo.AreaSlots():FindFirstChild(uid))
+            or nil
+    end)
+end
+
+-- entri dari record snapshot (format asli: Uid/State/AreaId/NestId/
+-- BottomCFrame/CarrierUserId/AssetCategory/AssetScale/Mutations)
+local function recordEntry(rec)
+    if type(rec) ~= "table" then return nil end
+    local uid = rec.Uid and tostring(rec.Uid) or nil
+    if not uid or uid == "" then return nil end
+    local state = rec.State
+    if state == "Carried" or state == "Claimed" then return nil end
+    local cat = tostring(rec.AssetCategory or rec.Category or "")
+    local name = cat
+    local spec = Repo.Spec(cat)
+    if type(spec) == "table" then
+        local dn = spec.DisplayName or spec._id
+        if dn and tostring(dn) ~= "" then name = tostring(dn) end
+    end
+    if name == "" then name = uid end
+    local label, num = Repo.RarityOf(cat)
+    local scale = tonumber(rec.AssetScale) or 1
+    local muts = type(rec.Mutations) == "table" and rec.Mutations or {}
+    local m = slotModelOf(uid)
+    local pos = nil
+    if typeof(rec.BottomCFrame) == "CFrame" then
+        pos = rec.BottomCFrame.Position
+    elseif m then
+        pos = modelPos(m)
+    end
+    return {
+        Uid = uid, Kind = "Field", Model = m, Prompt = nil,
+        Name = name, Category = cat,
+        RarityLabel = label, RarityNum = num,
+        Scale = scale, Mutations = muts,
+        Value = Repo.EggValue(cat, scale, muts),
+        Pos = pos, Area = tostring(rec.AreaId or ""),
+        NestId = rec.NestId and tostring(rec.NestId) or nil,
+        State = state, Key = "F:" .. uid,
+    }
+end
+
+local feCache, feAt, feSrc = nil, 0, "?"
+function EggState.FieldEggs()
+    -- EGG AREA dunia utama. Sumber utama = snapshot RF (Records), lalu
+    -- dilengkapi scan instance (AreaEggSlotsClient + model GUID di root)
+    -- supaya panel tetap terisi walau remote tak terjangkau.
+    local now = os.clock()
+    if feCache and now - feAt < 2 then return feCache, feSrc end
+    feAt = now
+    local out, seen = {}, {}
+    feSrc = Repo.SnapshotOK() and "RF" or "scan"
+
+    local snap = Repo.FieldSnapshot(1.2, true)
+    if type(snap) == "table" and type(snap.Records) == "table" then
+        for _, rec in pairs(snap.Records) do
+            local e = P(recordEntry, rec)
+            if e and not seen[e.Key] then
+                seen[e.Key] = true
+                table.insert(out, e)
+            end
+        end
+    end
+
+    -- fallback: slot instance yang tak tercakup snapshot
+    local slots = Repo.AreaSlots()
+    if slots then
+        for _, m in ipairs(slots:GetChildren()) do
+            if P(function() return m:IsA("Model") end) and not seen["F:" .. m.Name]
+                and not weldCarrier(m) then
+                local name = Repo.EggName(m)
+                local label, num = Repo.RarityOf(name)
+                local scale = Repo.ScaleOf(m)
+                seen["F:" .. m.Name] = true
+                table.insert(out, {
+                    Uid = m.Name, Kind = "Field", Model = m, Prompt = nil,
+                    Name = name, Category = name,
+                    RarityLabel = label, RarityNum = num,
+                    Scale = scale, Mutations = {},
+                    Value = Repo.EggValue(name, scale),
+                    Pos = modelPos(m), Area = "",
+                    State = "Slot", Key = "F:" .. m.Name,
+                })
+            end
+        end
+    end
+
+    -- egg tergeletak/jatuh: model GUID (32 char + Hitbox) di akar workspace
+    for _, m in ipairs(workspace:GetChildren()) do
+        if P(function() return m:IsA("Model") and #m.Name == 32 end)
+            and not seen["F:" .. m.Name]
+            and P(function() return m:FindFirstChild("Hitbox") end)
+            and not weldCarrier(m) then
+            local name = Repo.EggName(m)
+            local label, num = Repo.RarityOf(name)
+            local scale = Repo.ScaleOf(m)
+            seen["F:" .. m.Name] = true
+            table.insert(out, {
+                Uid = m.Name, Kind = "Field", Model = m, Prompt = nil,
+                Name = name, Category = name,
+                RarityLabel = label, RarityNum = num,
+                Scale = scale, Mutations = {},
+                Value = Repo.EggValue(name, scale),
+                Pos = modelPos(m), Area = "",
+                State = "Dropped", Key = "F:" .. m.Name,
+            })
+        end
+    end
+
+    feCache = out
+    return out, feSrc
+end
+
+function EggState.HalloweenEggs()
+    -- egg event dimensi Halloween: anak HalloweenDimension.WorldEggs
+    -- dengan atribut HalloweenEggUid + StealPrompt aktif (persis asli).
+    local out = {}
+    local dim = Repo.HalloweenDim()
+    local folder = dim and dim:FindFirstChild("WorldEggs") or nil
+    if not folder then return out end
+    for _, m in ipairs(folder:GetChildren()) do
+        local uid = P(function() return m:GetAttribute("HalloweenEggUid") end)
+        local prompt = P(function() return m:FindFirstChild("StealPrompt", true) end)
         local live = prompt and P(function()
             return prompt:IsA("ProximityPrompt") and prompt.Enabled
         end) or nil
-        if prompt and live then
-            if not seen[model] then
-                seen[model] = true
-                table.insert(out, makeEggEntry(model, prompt, "Field", nil))
-            end
-        elseif depth < 2 and P(function() return model:IsA("Folder") or model:IsA("Model") end) then
-            collectFieldEggs(model, out, seen, depth + 1)
+        if uid and prompt and live then
+            local name = Repo.EggName(m)
+            local label, num = Repo.RarityOf(name)
+            local scale = Repo.ScaleOf(m)
+            local zone = P(function() return m:GetAttribute("Zone") end)
+            table.insert(out, {
+                Uid = tostring(uid), HwUid = tostring(uid), Kind = "Halloween",
+                Model = m, Prompt = prompt,
+                Name = name, Category = name,
+                RarityLabel = label, RarityNum = num,
+                Scale = scale, Mutations = {},
+                Value = Repo.EggValue(name, scale),
+                Pos = modelPos(m), Zone = zone,
+                Area = tostring(zone or ""),
+                State = "Slot", Key = "H:" .. tostring(uid),
+            })
         end
     end
-end
-
-function EggState.FieldEggs()
-    -- egg di lapangan: model dengan StealPrompt aktif di WorldEggs
-    -- (termasuk sub-folder) + folder event HalloweenWorldEggs
-    local out, seen = {}, {}
-    collectFieldEggs(Repo.WorldEggs(), out, seen, 0)
-    local w = Repo.World()
-    collectFieldEggs(w and w:FindFirstChild("HalloweenWorldEggs"), out, seen, 0)
-    collectFieldEggs(workspace:FindFirstChild("HalloweenWorldEggs"), out, seen, 0)
     return out
 end
 
@@ -1233,16 +1440,22 @@ end
 
 local stCache, stAt = nil, 0
 function EggState.StealTargets()
-    -- SEMUA item yang bisa dicuri: egg lapangan + egg terpasang milik
-    -- pemain LAIN (PlacedEggRenders). Dipakai Auto Steal & Steal Panel;
-    -- di-cache 3 detik biar murah.
+    -- SEMUA item yang bisa dicuri: egg area (snapshot RF) + egg event
+    -- Halloween + egg terpasang milik pemain lain (PlacedEggRenders,
+    -- bila tersedia prompt curinya). Di-cache 3 detik biar murah.
     local now = os.clock()
     if stCache and now - stAt < 3 then return stCache end
     stAt = now
     local out, seen = {}, {}
     for _, egg in ipairs(EggState.FieldEggs()) do
-        if not seen[egg.Model] then
-            seen[egg.Model] = true
+        if not seen[egg.Key] then
+            seen[egg.Key] = true
+            table.insert(out, egg)
+        end
+    end
+    for _, egg in ipairs(EggState.HalloweenEggs()) do
+        if not seen[egg.Key] then
+            seen[egg.Key] = true
             table.insert(out, egg)
         end
     end
@@ -1250,21 +1463,25 @@ function EggState.StealTargets()
     local myUid = tostring(LocalPlayer.UserId)
     if renders then
         for _, m in ipairs(renders:GetChildren()) do
-            local ownerUid = renderOwnerUid(m)
-            if ownerUid ~= "" and ownerUid ~= myUid then
-                local holders = {}
-                P(promptHolders, m, holders)
-                for _, holder in ipairs(holders) do
-                    local prompt = P(function() return holder:FindFirstChild("StealPrompt") end)
-                    local live = prompt and P(function()
-                        return prompt:IsA("ProximityPrompt") and prompt.Enabled
-                    end) or nil
-                    if prompt and live and not seen[holder] then
-                        seen[holder] = true
-                        local egg = makeEggEntry(holder, prompt, "Base", ownerUid)
-                        egg.OwnerName = ownerDisplayName(ownerUid)
-                        egg.RenderRoot = m
-                        table.insert(out, egg)
+            if not string.find(m.Name, myUid, 1, true) then
+                local ownerUid = renderOwnerUid(m)
+                if ownerUid ~= "" and ownerUid ~= myUid then
+                    local holders = {}
+                    P(promptHolders, m, holders)
+                    for _, holder in ipairs(holders) do
+                        local prompt = P(function() return holder:FindFirstChild("StealPrompt") end)
+                        local live = prompt and P(function()
+                            return prompt:IsA("ProximityPrompt") and prompt.Enabled
+                        end) or nil
+                        if prompt and live and not seen["B:" .. m.Name] then
+                            seen["B:" .. m.Name] = true
+                            local egg = makeEggEntry(holder, prompt, "Base", ownerUid)
+                            egg.OwnerName = ownerDisplayName(ownerUid)
+                            egg.RenderRoot = m
+                            egg.Uid = tostring(P(function() return m:GetAttribute("Uid") end) or m.Name)
+                            egg.Key = "B:" .. m.Name
+                            table.insert(out, egg)
+                        end
                     end
                 end
             end
@@ -1315,19 +1532,23 @@ end
 --────────────────────────────[ AUTO STEAL ]────────────────────────────
 
 local Steal = {
-    on = false, areas = {}, minRarity = 0, minValue = 0, specific = {}, lock = nil,
+    on = false, areas = {}, minRarity = 0, minValue = 0, specific = {},
+    -- lock = Key entry pilihan manual dari Steal Panel (string, stabil
+    -- lintas pembaruan cache; di-resolve ulang tiap pick)
+    lock = nil,
     missingIndex = false, dropSafe = false, priority = "Best Rarity",
     tweenSpeed = 100, carrySpeed = 100, instant = false, v2 = false, v3 = true,
     busy = false, bad = {}, stolen = 0, best = nil, bestRank = -1,
-    history = {}, lastDeliver = 0,
+    history = {}, lastDeliver = 0, hwDelivered = 0,
 }
 
 local function stealAreaOk(egg)
     if next(Steal.areas) == nil then return true end
     -- area/zone hanya untuk egg lapangan; egg di base pemain lain selalu lolos
     if egg.Kind == "Base" then return true end
-    local zone = egg.Zone and tostring(egg.Zone) or nil
-    if zone and Steal.areas[zone] then return true end
+    -- egg snapshot punya AreaId resmi (mis. "Forest") langsung dari server
+    local area = tostring(egg.Area or egg.Zone or "")
+    if area ~= "" and Steal.areas[area] then return true end
     -- cocokkan nama area juga lewat posisi (folder Areas)
     local areas = Repo.Areas()
     if areas and egg.Pos then
@@ -1351,10 +1572,13 @@ end
 
 local function stealFilterOk(egg)
     if not stealAreaOk(egg) then return false end
-    if next(Steal.specific) ~= nil and not Steal.specific[egg.Name] then return false end
+    -- "Target Specific Eggs" memakai kategori aset (kunci Directory),
+    -- persis opsi menu; fallback ke nama tampilan
+    local specificKey = egg.Category or egg.Name
+    if next(Steal.specific) ~= nil and not Steal.specific[specificKey] then return false end
     if Steal.minRarity > 0 and egg.RarityNum < Steal.minRarity then return false end
     if Steal.minValue > 0 and egg.Value < Steal.minValue then return false end
-    if Steal.missingIndex and not Repo.IndexMissing(egg.Name) then return false end
+    if Steal.missingIndex and not Repo.IndexMissing(egg.Category or egg.Name) then return false end
     return true
 end
 
@@ -1369,16 +1593,19 @@ local function stealScore(egg)
 end
 
 local function pickStealTarget()
-    -- target pilihan manual dari Steal Panel selalu menang (tanpa filter)
-    if Steal.lock and Steal.lock.Model and Steal.lock.Model.Parent
-        and Steal.lock.Prompt and Steal.lock.Prompt.Parent then
-        return Steal.lock
+    local targets = EggState.StealTargets()
+    -- target pilihan manual dari Steal Panel selalu menang (tanpa filter);
+    -- lock berupa Key, di-resolve ke entri terbaru supaya posisi live
+    if Steal.lock then
+        for _, egg in ipairs(targets) do
+            if egg.Key == Steal.lock then return egg end
+        end
+        Steal.lock = nil
     end
-    Steal.lock = nil
     local best, bestScore = nil, -math.huge
     local now = os.clock()
-    for _, egg in ipairs(EggState.StealTargets()) do
-        if not (Steal.bad[egg.Model] and Steal.bad[egg.Model] > now) then
+    for _, egg in ipairs(targets) do
+        if not (Steal.bad[egg.Key] and Steal.bad[egg.Key] > now) then
             if stealFilterOk(egg) then
                 local sc = stealScore(egg)
                 if sc > bestScore then
@@ -1403,6 +1630,22 @@ local function fireStealPrompt(egg)
     return true
 end
 
+-- ==== deteksi "sedang membawa egg" (multi-sinyal) ====
+
+local function carriedUidByMe()
+    -- record snapshot: ada egg ber-state Carried dengan CarrierUserId kita
+    local snap = Repo.FieldSnapshot(1.5)
+    if type(snap) ~= "table" or type(snap.Records) ~= "table" then return nil end
+    local myId = LocalPlayer.UserId
+    for _, rec in pairs(snap.Records) do
+        if type(rec) == "table" and rec.State == "Carried"
+            and tonumber(rec.CarrierUserId) == myId then
+            return tostring(rec.Uid or "")
+        end
+    end
+    return nil
+end
+
 local function isCarrying()
     local char = LocalPlayer.Character
     if not char then return false end
@@ -1411,13 +1654,53 @@ local function isCarrying()
     for _, nm in ipairs({ "Carrying", "CarriedEgg", "HeldEgg", "Egg" }) do
         if char:FindFirstChild(nm) then return true end
     end
+    -- atribut global dimensi Halloween (pola asli)
+    if P(function() return workspace:GetAttribute("HalloweenCarrying") end) == true then
+        return true
+    end
+    -- record snapshot: egg sedang kita bawa
+    if carriedUidByMe() ~= nil then return true end
+    -- model GUID di akar workspace yang di-weld ke karakter kita
+    for _, m in ipairs(workspace:GetChildren()) do
+        if P(function() return m:IsA("Model") and #m.Name == 32 end)
+            and weldCarrier(m) == char then
+            return true
+        end
+    end
     return false
 end
 
-local function deliverEgg(tool)
-    -- bawa egg pulang: ke base (auto-redeem) atau drop di safe zone
+local function deliverEgg()
+    -- bawa egg pulang: ke base (auto-redeem) atau drop di safe zone.
+    -- Untuk egg event Halloween: antar ke SafeZone dimensi Halloween lalu
+    -- minta drop via RF (pola asli AskDropEgg).
     local claimed = Movement.Claim("steal")
-    local startedAt = os.clock()
+    local speed = Steal.carrySpeed / 100
+
+    if P(function() return workspace:GetAttribute("HalloweenCarrying") end) == true then
+        local sz = Repo.HalloweenSafeZone()
+        if sz and sz:IsA("BasePart") then
+            Tasks.Status("steal", "HOLD EGG  |  menuju SafeZone Halloween")
+            local root = Movement.Root()
+            if root then
+                local rel = sz.CFrame:PointToObjectSpace(root.Position)
+                local mx = math.max(sz.Size.X / 2 - 6, 0)
+                local mz = math.max(sz.Size.Z / 2 - 6, 0)
+                local goal = sz.CFrame:PointToWorldSpace(Vector3.new(
+                    math.clamp(rel.X, -mx, mx), 0, math.clamp(rel.Z, -mz, mz)))
+                Movement.CarryTo(goal, function() return not isCarrying() end, 60, speed)
+            end
+            Repo.Invoke("RF/HalloweenDimension/AskDropEgg")
+            task.wait(0.6)
+            Steal.hwDelivered = Steal.hwDelivered + 1
+            Tasks.Status("steal", "Halloween egg secured #" .. Steal.hwDelivered)
+            Webhook.Post("Halloween Egg", "Halloween egg secured! #" .. Steal.hwDelivered, 0)
+        end
+        Movement.Release("steal")
+        Steal.busy = false
+        return
+    end
+
     Tasks.Status("steal", "HOLD EGG  |  delivering")
     local wantSafe = Steal.dropSafe
     local home = nil
@@ -1450,13 +1733,12 @@ local function deliverEgg(tool)
         end
     end
 
-    local speed = Steal.carrySpeed / 100
     Movement.CarryTo(target, function()
         return not isCarrying()
     end, 45, speed)
 
-    -- beri kesempatan server redeem
-    local t = os.clock() + 3.5
+    -- beri kesempatan server redeem (record berubah dari Carried)
+    local t = os.clock() + 8
     while isCarrying() and os.clock() < t do
         task.wait(0.1)
     end
@@ -1469,30 +1751,133 @@ local function deliverEgg(tool)
     Steal.busy = false
 end
 
-local function stealEgg(egg)
-    local claimed = Movement.Claim("steal")
-    if not claimed then
-        Steal.busy = false
-        return
+-- ==== pencarian record snapshot per Uid ====
+local function fieldRecord(uid)
+    local snap = Repo.FieldSnapshot(1.5)
+    if type(snap) ~= "table" or type(snap.Records) ~= "table" then return nil end
+    for _, rec in pairs(snap.Records) do
+        if type(rec) == "table" and tostring(rec.Uid or "") == uid then
+            return rec
+        end
     end
-    local model = egg.Model
-    Tasks.Status("steal", "FLY TO EGG  |  " .. tostring(egg.Name))
+    return nil
+end
+
+-- ==== prompt curi egg area (pola asli) ====
+-- Prompt curi egg area TIDAK menempel di egg: game memasang part global
+-- "SmartPromptPart" (anak workspace) berisi ProximityPrompt
+-- "CarryAreaEgg". Pilih part terdekat ke EGG, lalu pastikan tidak ada
+-- egg lain yang lebih dekat ke part itu (anti salah-ambil).
+local function nearestCarryPrompt(egg)
+    local pos = egg.Pos
+    if not pos then return nil end
+    local bestPrompt, bestPart, bestD = nil, nil, math.huge
+    for _, m in ipairs(workspace:GetChildren()) do
+        if m.Name == "SmartPromptPart" then
+            local pr = P(function() return m:FindFirstChild("CarryAreaEgg") end)
+            local isPart = P(function() return m:IsA("BasePart") end)
+            if pr and isPart and P(function() return pr:IsA("ProximityPrompt") end) then
+                local mp = P(function() return m.Position end)
+                if mp then
+                    local d = (mp - pos).Magnitude
+                    if d < bestD then bestPrompt, bestPart, bestD = pr, m, d end
+                end
+            end
+        end
+    end
+    if not bestPrompt or not bestPart then return nil end
+    local pp = P(function() return bestPart.Position end)
+    if not pp then return nil end
+    for _, other in ipairs(EggState.FieldEggs()) do
+        if other.Key ~= egg.Key and other.Pos
+            and (other.Pos - pp).Magnitude + 1.5 < (pos - pp).Magnitude then
+            return nil -- part itu melayani egg lain, jangan ditembak
+        end
+    end
+    return bestPrompt
+end
+
+-- ==== alur curi egg AREA (dunia utama, tanpa prompt di egg) ====
+local function stealFieldEgg(egg)
+    local step = Steal.instant and 60 or (Steal.tweenSpeed / 100 * 40)
     local attempt = 0
-    while attempt < 3 do
+    while attempt < 4 and not isCarrying() do
         attempt = attempt + 1
-        if not model.Parent or not egg.Prompt or not egg.Prompt.Enabled then break end
-        -- terbang mendekati prompt
+        local rec = fieldRecord(egg.Uid)
+        local m = egg.Model
+        local modelAlive = m and P(function() return m.Parent ~= nil end) == true
+
+        if rec then
+            if rec.State == "Claimed" then return "taken" end
+            if rec.State == "Carried" then
+                if tonumber(rec.CarrierUserId) == LocalPlayer.UserId then
+                    return "ok"
+                end
+                return "taken"
+            end
+            if typeof(rec.BottomCFrame) == "CFrame" then
+                egg.Pos = rec.BottomCFrame.Position
+            end
+        elseif not modelAlive then
+            return "gone" -- hilang dari snapshot & dunia: diambil/despawn
+        end
+
+        -- egg yang tiba-tiba di-weld ke orang lain = sudah diambil
+        if m and modelAlive and weldCarrier(m) ~= nil then return "taken" end
+
+        local pos = egg.Pos
+        if m and modelAlive and not pos then pos = modelPos(m) end
+        if not pos then return "gone" end
+
+        local t = os.clock() + 4
+        while os.clock() < t and not isCarrying() do
+            local root = Movement.Root()
+            if not root then return "fail" end
+            local live = modelPos(m) or pos
+            local d = (live - root.Position).Magnitude
+            if d > 6 then
+                Movement.StepTo(live + Vector3.new(0, 2.5, 0), step)
+            else
+                local prompt = nearestCarryPrompt(egg)
+                if prompt then
+                    pcall(function() prompt.HoldDuration = 0 end)
+                    if fireproximityprompt then
+                        pcall(fireproximityprompt, prompt)
+                    else
+                        pcall(function()
+                            prompt:InputHoldBegin() prompt:InputHoldEnd()
+                        end)
+                    end
+                end
+                task.wait(0.3)
+            end
+            task.wait()
+        end
+    end
+    if isCarrying() then return "ok" end
+    local m = egg.Model
+    if m and not P(function() return m.Parent ~= nil end) then return "gone" end
+    return "fail"
+end
+
+-- ==== alur curi egg BER-PROMPT (Halloween / base pemain lain) ====
+local function stealPromptEgg(egg)
+    local model, prompt = egg.Model, egg.Prompt
+    local step = Steal.instant and 60 or (Steal.tweenSpeed / 100 * 40)
+    local attempt = 0
+    while attempt < 3 and not isCarrying() do
+        attempt = attempt + 1
+        if not model.Parent or not prompt or not prompt.Parent then
+            return (model.Parent and "fail") or "gone"
+        end
         local deadline = os.clock() + 3
         while os.clock() < deadline do
             local root = Movement.Root()
             if not root then break end
             if not model.Parent then break end
-            local pos = P(function()
-                if model:IsA("Model") then return model:GetPivot().Position else return model.CFrame.Position end
-            end)
+            local pos = modelPos(model)
             if not pos then break end
             local d = pos - root.Position
-            local step = Steal.instant and 60 or (Steal.tweenSpeed / 100 * 40)
             if d.Magnitude < 5 then
                 fireStealPrompt(egg)
                 if isCarrying() or not model.Parent then break end
@@ -1511,9 +1896,27 @@ local function stealEgg(egg)
         if isCarrying() then break end
         task.wait(0.2)
     end
+    if isCarrying() then return "ok" end
+    if not model.Parent then return "gone" end
+    return "fail"
+end
 
-    if Steal.lock and Steal.lock.Model == model then Steal.lock = nil end
-    if isCarrying() then
+local function stealEgg(egg)
+    local claimed = Movement.Claim("steal")
+    if not claimed then
+        Steal.busy = false
+        return
+    end
+    Tasks.Status("steal", "FLY TO EGG  |  " .. tostring(egg.Name))
+    local res
+    if egg.Kind == "Field" and not egg.Prompt then
+        res = stealFieldEgg(egg)
+    else
+        res = stealPromptEgg(egg)
+    end
+
+    if Steal.lock and Steal.lock == egg.Key then Steal.lock = nil end
+    if res == "ok" and isCarrying() then
         Steal.stolen = Steal.stolen + 1
         table.insert(Steal.history, { name = egg.Name, rarity = egg.RarityLabel, value = egg.Value, at = os.time() })
         if #Steal.history > 20 then table.remove(Steal.history, 1) end
@@ -1524,16 +1927,15 @@ local function stealEgg(egg)
         Notify("⚡ Egg dicuri!", tostring(egg.Name) .. " [" .. tostring(egg.RarityLabel) .. "]", 4)
         Webhook.Post("Egg Stolen", string.format("**%s** [%s] — value %s/s",
             tostring(egg.Name), tostring(egg.RarityLabel), fmtNum(egg.Value)), egg.RarityNum)
-        deliverEgg(LocalPlayer.Character:FindFirstChildOfClass("Tool"))
-    elseif not model.Parent then
-        -- egg hilang dari dunia tapi tidak kita bawa: diambil pemain lain
-        Steal.bad[model] = os.clock() + 8
-        Tasks.Status("steal", "Egg diambil pemain lain, lanjut target berikutnya")
+        deliverEgg()
+    elseif res == "gone" or res == "taken" then
+        Steal.bad[egg.Key] = os.clock() + 8
+        Tasks.Status("steal", "Egg diambil pemain lain / sudah hilang, lanjut target berikutnya")
         Movement.Release("steal")
         Steal.busy = false
     else
         -- gagal: blacklist sebentar
-        Steal.bad[model] = os.clock() + 20
+        Steal.bad[egg.Key] = os.clock() + 20
         Tasks.Status("steal", "Steal gagal, egg diblacklist 20s")
         Movement.Release("steal")
         Steal.busy = false
@@ -1545,7 +1947,7 @@ Tasks.Add("steal", 0.4, function()
     if Steal.busy then return end
     if isCarrying() then
         Steal.busy = true
-        task.spawn(deliverEgg, LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool"))
+        task.spawn(deliverEgg)
         return
     end
     local target = pickStealTarget()
@@ -1554,7 +1956,10 @@ Tasks.Add("steal", 0.4, function()
         task.spawn(stealEgg, target)
     else
         local total = #EggState.StealTargets()
-        if total == 0 then
+        local fe, src = EggState.FieldEggs()
+        if #fe == 0 and src ~= "RF" and not Repo.AreaSlots() then
+            Tasks.Status("steal", "Idle  |  snapshot RF belum terjangkau & tidak ada slot egg terlihat")
+        elseif total == 0 then
             Tasks.Status("steal", "Idle  |  belum ada egg stealable terlihat")
         else
             Tasks.Status("steal", "Idle  |  " .. total .. " egg terlihat, semua tercegat filter")
@@ -2618,7 +3023,7 @@ local function hwStealEgg(egg)
     while os.clock() < deadline and model.Parent do
         local root = Movement.Root()
         if not root then break end
-        if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool") then break end
+        if isCarrying() then break end
         local pos = P(function() return model:GetPivot().Position end)
         if not pos then break end
         local d = pos - root.Position
@@ -2633,9 +3038,9 @@ local function hwStealEgg(egg)
         end
         task.wait()
     end
-    if LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool") then
+    if isCarrying() then
         -- bawa ke safe zone Halloween dengan fisika
-        local sz = Repo.SafeZone()
+        local sz = Repo.HalloweenSafeZone()
         if sz and sz:IsA("BasePart") then
             Tasks.Status("halloween", "Carrying the Halloween egg to safety")
             local root = Movement.Root()
@@ -2645,7 +3050,7 @@ local function hwStealEgg(egg)
                 local mz = math.max(sz.Size.Z / 2 - 6, 0)
                 local goal = sz.CFrame:PointToWorldSpace(Vector3.new(math.clamp(rel.X, -mx, mx), 0, math.clamp(rel.Z, -mz, mz)))
                 Movement.CarryTo(goal, function()
-                    return not (LocalPlayer.Character and LocalPlayer.Character:FindFirstChildOfClass("Tool"))
+                    return not isCarrying()
                 end, 60, Hw.speed / 100)
             end
             Repo.Invoke("RF/HalloweenDimension/AskDropEgg")
@@ -2663,11 +3068,12 @@ end
 Tasks.Add("halloween", 1.0, function()
     if not Hw.steal then return end
     if Movement.Owner == "hwsteal" then return end
+    if Steal.busy then return end -- Auto Steal utama sedang berjalan
     local best, bd = nil, math.huge
     local root = Movement.Root()
     if not root then return end
-    for _, egg in ipairs(EggState.FieldEggs()) do
-        if egg.HwUid and hwFilterOk(egg) and egg.Pos then
+    for _, egg in ipairs(EggState.HalloweenEggs()) do
+        if hwFilterOk(egg) and egg.Pos then
             local d = (egg.Pos - root.Position).Magnitude
             if d < bd then best, bd = egg, d end
         end
@@ -3022,11 +3428,13 @@ local function espInfoLines(egg, root)
     end
     if ESP.info["Size"] then table.insert(lines, "size " .. tostring(round(egg.Scale, 1))) end
     if ESP.info["Weight"] then table.insert(lines, "wt " .. tostring(round(egg.Scale, 1))) end
-    if ESP.info["Area"] then table.insert(lines, tostring(egg.Zone or "-")) end
+    if ESP.info["Area"] then table.insert(lines, tostring(egg.Area or egg.Zone or "-")) end
     if ESP.info["Distance"] and root then
         table.insert(lines, tostring(math.floor((egg.Pos - root.Position).Magnitude)) .. "m")
     end
-    if ESP.info["State"] then table.insert(lines, "Field") end
+    if ESP.info["State"] then
+        table.insert(lines, tostring(egg.State or egg.Kind or "Field"))
+    end
     if #lines == 0 then table.insert(lines, egg.Name) end
     return lines
 end
@@ -3042,7 +3450,18 @@ Tasks.Add("esp", 0.2, function()
 
     if ESP.eggs then
         for _, egg in ipairs(EggState.FieldEggs()) do
-            if egg.RarityNum >= ESP.minRarity and egg.Value >= ESP.minValue then
+            if egg.Model and egg.RarityNum >= ESP.minRarity and egg.Value >= ESP.minValue then
+                if root and egg.Pos and (egg.Pos - root.Position).Magnitude <= ESP.maxDist then
+                    seen[egg.Model] = true
+                    local lines = espInfoLines(egg, root)
+                    lines.rarityLabel = egg.RarityLabel
+                    espShowEgg(egg.Model, lines)
+                end
+            end
+        end
+        -- egg event Halloween
+        for _, egg in ipairs(EggState.HalloweenEggs()) do
+            if egg.Model and egg.RarityNum >= ESP.minRarity and egg.Value >= ESP.minValue then
                 if root and egg.Pos and (egg.Pos - root.Position).Magnitude <= ESP.maxDist then
                     seen[egg.Model] = true
                     local lines = espInfoLines(egg, root)
@@ -3717,19 +4136,6 @@ local SP_DIM    = Color3.fromRGB(145, 155, 180)
 local SP_STROKE = Color3.fromRGB(45, 58, 88)
 local SP_DARK   = Color3.fromRGB(30, 24, 0)
 
--- id stabil per instance (signature daftar), weak-key biar aman memori
-local eggIdNext = 0
-local eggIdCache = setmetatable({}, { __mode = "k" })
-local function eggId(inst)
-    local id = eggIdCache[inst]
-    if not id then
-        eggIdNext = eggIdNext + 1
-        id = eggIdNext
-        eggIdCache[inst] = id
-    end
-    return id
-end
-
 local function spNew(class, props, parent)
     local inst = Instance.new(class)
     if props then
@@ -3789,16 +4195,17 @@ local function destroyOldPanels()
 end
 
 local function selectEgg(eg)
-    if not eg or not eg.Model or not eg.Model.Parent then return end
+    -- entry snapshot tidak punya Model; validasi cukup lewat Key
+    if not eg or not eg.Key then return end
     StealPanel.selected = eg
-    Steal.lock = eg
+    Steal.lock = eg.Key
     Tasks.Status("steal", "Target dipilih: " .. tostring(eg.Name))
 end
 
 local function stealNow(eg)
-    if not eg or not eg.Model or not eg.Model.Parent then return end
+    if not eg or not eg.Key then return end
     StealPanel.selected = eg
-    Steal.lock = eg
+    Steal.lock = eg.Key
     if Steal.busy then
         Notify("Steal Panel", "Masih sibuk — target ini disimpan sebagai prioritas", 3)
         return
@@ -3849,6 +4256,10 @@ local function rebuildRows(sorted)
         local disp = tostring(eg.Name)
         if eg.Kind == "Base" then
             disp = disp .. " @ " .. tostring(eg.OwnerName or "?")
+        elseif eg.Kind == "Halloween" then
+            disp = "[HW] " .. disp
+        elseif eg.Area and eg.Area ~= "" then
+            disp = disp .. "  [" .. tostring(eg.Area) .. "]"
         end
         if #disp > 30 then disp = disp:sub(1, 29) .. "..." end
         local rnum = eg.RarityNum or 0
@@ -3933,9 +4344,16 @@ function StealPanel.Update()
         StealPanel.lblHw.TextColor3 = hwOn and SP_DARK or SP_DIM
     end
 
-    local nField, nBase = 0, 0
+    local liveKeys, nField, nBase, nHw = {}, 0, 0, 0
     for _, t in ipairs(targets) do
-        if t.Kind == "Base" then nBase = nBase + 1 else nField = nField + 1 end
+        liveKeys[t.Key] = true
+        if t.Kind == "Base" then
+            nBase = nBase + 1
+        elseif t.Kind == "Halloween" then
+            nHw = nHw + 1
+        else
+            nField = nField + 1
+        end
         if myPos and t.Pos then
             t.Dist = (t.Pos - myPos).Magnitude
         else
@@ -3943,7 +4361,8 @@ function StealPanel.Update()
         end
     end
     if StealPanel.lblEggs then
-        StealPanel.lblEggs.Text = string.format("Eggs: %d (F%d/B%d)", #targets, nField, nBase)
+        StealPanel.lblEggs.Text = string.format("Eggs: %d (F%d/H%d/B%d)",
+            #targets, nField, nHw, nBase)
     end
     if StealPanel.lblSort then
         StealPanel.lblSort.Text = "Sort: " .. tostring(StealPanel.sort)
@@ -3955,13 +4374,13 @@ function StealPanel.Update()
         StealPanel.lblNight.TextColor3 = night and SP_GOLD or SP_DIM
     end
 
-    -- seleksi valid?
+    -- seleksi valid? (Key tetap ada di daftar target terbaru)
     local sel = StealPanel.selected
-    if sel and (not sel.Model or not sel.Model.Parent) then
+    if sel and not (liveKeys[sel.Key] or (sel.Model and sel.Model.Parent)) then
         StealPanel.selected = nil
         sel = nil
     end
-    if Steal.lock and Steal.lock.Model and not Steal.lock.Model.Parent then
+    if Steal.lock and not liveKeys[Steal.lock] then
         Steal.lock = nil
     end
     if StealPanel.lblSel then
@@ -3980,7 +4399,7 @@ function StealPanel.Update()
     -- bangun ulang hanya kalau komposisi berubah (hemat CPU)
     local sigParts = {}
     for _, t in ipairs(sorted) do
-        sigParts[#sigParts + 1] = tostring(eggId(t.Model)) .. ":" .. tostring(t.Name)
+        sigParts[#sigParts + 1] = tostring(t.Key) .. ":" .. tostring(t.Name)
             .. ":" .. tostring(t.RarityNum)
     end
     local sig = table.concat(sigParts, "|")
@@ -3992,12 +4411,12 @@ function StealPanel.Update()
     -- update teks tiap baris (jarak berubah terus)
     for _, r in ipairs(StealPanel.rows) do
         local eg = r.eg
-        local alive = eg.Model and eg.Model.Parent
+        local alive = (eg.Model and eg.Model.Parent ~= nil) or liveKeys[eg.Key] == true
         P(function()
             r.frame.Visible = alive and true or false
             if not alive then return end
             r.dst.Text = eg.Dist and (tostring(math.floor(eg.Dist + 0.5)) .. "m") or "?"
-            local isSel = StealPanel.selected and StealPanel.selected.Model == eg.Model
+            local isSel = StealPanel.selected and StealPanel.selected.Key == eg.Key
             r.frame.BackgroundColor3 = isSel and SP_CARDH or SP_CARD
         end)
     end

@@ -216,3 +216,16 @@ Laporan pemakai: *"Auto Steal tidak work; di kode asli harusnya muncul UI tambah
 4. **Status lebih jujur**: membedakan "belum ada egg stealable terlihat" vs "N egg terlihat, semua tercegat filter" — memudahkan diagnosis saat struktur game berubah.
 
 Revalidasi: `luau-compile --only-parse` lolos (5.082 baris); smoke test harness diulang: 244 elemen/9 tab, 80 toggle ON 0 gagal, 19 tombol OK, dispatcher 120.000 tick 0 error, re-execute aman.
+
+### 8.6 Pembaruan kedua pasca-laporan pemakai — sumber data egg area yang benar
+
+Laporan lanjutan pemakai: *"Auto masih belum work dan panel masih kosong."* Bedah ulang konteks payload asli (bukan sekadar string) menemukan bahwa asumsi struktur dunia pada perbaikan pertama masih salah:
+
+1. **Egg area dunia utama TIDAK punya `StealPrompt` dan TIDAK berada di `WorldEggs`.** Script asli membacanya lewat RemoteFunction `RF/EggWorld/AskFieldEggSnapshot` (`ReplicatedStorage.Packages.Networking`) yang mengembalikan `Records`: `{Uid, State ("Slot"/"Dropped"/"Carried"/"Claimed"), AreaId, NestId, BottomCFrame, CarrierUserId, AssetCategory, AssetScale, Mutations}`. Nama/rarity/nilai diselesaikan lewat `AssetItems.Assets.Directory[AssetCategory]` dan rumus nilai `EarningRate × skala^1.85 × mutasi` — semua kini dipakai persis.
+2. **Mekanik curi egg area**: prompt curinya adalah part global `SmartPromptPart` (anak `workspace`) berisi ProximityPrompt `CarryAreaEgg`. Script asli terbang ke `BottomCFrame`, memilih `SmartPromptPart` **terdekat ke egg**, memverifikasi tidak ada egg lain yang lebih dekat ke part itu (anti salah-ambil), lalu `HoldDuration = 0` + `fireproximityprompt`. Alur lengkap ini kini direimplementasi.
+3. **`WorldEggs` ternyata sarang egg DIMENSI HALLOWEEN**, bukan dunia utama: `workspace.HalloweenDimension.WorldEggs`, anak beraatribut `HalloweenEggUid` + `StealPrompt`. Path lama (`World.WorldEggs`) tidak pernah ada di game asli — penyebab utama panel kosong. Scan Halloween kini memakai path yang benar, dan pengiriman egg Halloween memakai `HalloweenCarrying` (atribut workspace) + `RF/HalloweenDimension/AskDropEgg`.
+4. **Instance pendukung**: slot egg area nyata berada di `workspace.AreaEggSlotsClient[Uid]` (model + `Hitbox`), egg jatuh/terbawa berupa model GUID 32 karakter di akar `workspace` (terdeteksi sedang dipegang pemain bila di-*weld* ke karakter). Semuanya kini menjadi fallback scan bila remote snapshot tidak terjangkau — panel tetap terisi.
+5. **Deteksi bawa egg kini multi-sinyal**: Tool; model anak karakter; atribut `HalloweenCarrying`; record snapshot `State == "Carried"` dengan `CarrierUserId` kita; model GUID ter-weld ke karakter kita. Blacklist target dan kunci panel memakai `Key` string (stabil lintas pembaruan cache), bukan referensi instance.
+6. **Snapshot invoke NON-BLOCKING**: `Repo.FieldSnapshot` memanggil remote di task terpisah dengan guard *pending* — pemanggil tidak pernah menggantung menunggu server, dan kegagalan berulang otomatis memperlambat percobaan ulang.
+
+Revalidasi: `luau-compile --only-parse` lolos (5.501 baris); `luau-analyze`: tidak ada global baru yang tidak dikenal; smoke test harness diulang: 244 elemen/9 tab, 80 toggle ON 0 gagal, 244 elemen di-*fire*, 19 tombol OK, dispatcher 120.000 tick 0 error, RenderStepped 200×, re-execute aman.

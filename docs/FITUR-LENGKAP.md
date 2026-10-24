@@ -14,8 +14,8 @@ Fitur inti script ini. Karakter kamu akan otomatis berjalan/tween ke egg yang lo
 
 | Pengaturan | Penjelasan |
 |------------|-----------|
-| **Auto Steal** | Mengaktifkan pencurian otomatis |
-| **Steal Panel** | Panel melayang tambahan: daftar semua item yang bisa dicuri (egg lapangan + egg di base pemain lain) dengan rarity/nilai/jarak/pemilik; klik baris = kunci item jadi target prioritas, tombol Steal = curi langsung; otomatis terbuka saat Auto Steal ON (versi ThorHub) |
+| **Auto Steal** | Mengaktifkan pencurian otomatis — membaca daftar egg area dari snapshot server (`RF/EggWorld/AskFieldEggSnapshot`), lalu terbang ke egg dan menembak prompt `SmartPromptPart.CarryAreaEgg` terdekat, seperti script asli |
+| **Steal Panel** | Panel melayang tambahan: daftar semua item yang bisa dicuri (egg area dari snapshot server + egg event Halloween + egg di base pemain lain) dengan nama/area/rarity/nilai/jarak/pemilik; klik baris = kunci item jadi target prioritas, tombol Steal = curi langsung; otomatis terbuka saat Auto Steal ON (versi ThorHub) |
 | **Target Areas** | Pilih zona mana saja yang di-scan (misal hanya zona tertentu) |
 | **Min Rarity** | Rarity minimal egg yang mau dicuri — pasang `Eternal`/`Divine` biar cuma kejar egg langka |
 | **Min Steal Value** | Nilai jual minimal egg yang mau dicuri (angka, satuannya per detik /s) |
