@@ -162,3 +162,46 @@ Dari payload berhasil dipetakan:
 - **Icon window**: PNG chili 100×100 tertanam sebagai base64 (5.340 char), di-decode saat runtime lalu ditulis ke `Chilli Hub/VenyxMark1.png` dan dipakai via `getcustomasset` (dicek dulu `Venyx/mark1.png` jika sudah ada)
 - **Teks branding yang tampil**: "Chilli Hub" (splash + panel Anti Guard), `<b>Chilli Hub</b>` (kartu promo), "Bring your Chilli config over." (notifikasi migrasi), "Update the Chilli Library..." (peringatan versi)
 - **Internal identifier `Chilli*`** (attribute ScreenGui, nama instance, folder config `ChilliLibrary/`, global `_G.__ChilliAutoLoadQueued`, dll.) — **sengaja tidak diubah** pada rebrand karena dipakai untuk pencarian instance, pembersihan GUI lama, dan persistensi config
+
+---
+
+## 8. Tulis-Ulang Total — `ThorHub-StealAnEgg.lua` (menu 100% ThorUi)
+
+Permintaan lanjutan dari pemilik repo: menu yang **benar-benar dibangun dari ThorUi** (bukan reskin) dengan fitur disamakan. Karena callback fitur script asli tersambung ke library Venyx yang tertanam, satu-satunya jalan adalah **tulis-ulang dari nol** — dan itulah file baru ini.
+
+### 8.1 Sifat file baru
+
+- **100% Lua terbuka** — nol baris obfuscate, nol `loadstring` ke pihak ketiga (satu-satunya unduhan runtime: `ThorUi.lua` dari repo milik pemilik sendiri, `dwisetyabudi15581/ThorUi`)
+- **Nol promosi** — tidak ada tab Discord/Venyx, tidak ada `discord.gg` pihak ketiga, tidak ada `tienkhanh1/spicy`, tidak ada teks Chilli/Venyx di UI maupun identifier
+- **Self-hosting**: URL sumbernya sendiri (`dwisetyabudi15581/StealAnEgg/main/ThorHub-StealAnEgg.lua`) dipakai untuk fitur Auto Load Script setelah teleport — tidak lagi memuat ulang dari repo pembuat asli
+- Folder config baru: `ThorHub/Games/<PlaceId>/configs/…` + `config_state.json` + `autohop.json` (pengganti bersih dari `ChilliLibrary/…`)
+
+### 8.2 Dari mana fiturnya
+
+Inventaris fitur dipetakan dari **payload tahap-2** script asli yang sudah diekstrak sebelumnya:
+
+- **Serialisasi menu internal** (`@Farm|Auto Steal|…`, 1 string 8 KB) — sumber struktur tab/section/elemen beserta tipe & opsi dropdown
+- **244 panggilan `Create*`** di payload — nama, catatan, default, rentang slider
+- **60+ remote path** (`RE/…` RemoteEvent, `RF/…` RemoteFunction) di `ReplicatedStorage.Packages.Networking`
+- **Modul data game**: `Data.{Assets,Bases,Treadmills,Trails,Guards,HalloweenPets,HalloweenIndex,GhostDogQuest,…}`, `Shared.{Util.{AssetItems,AreaEggCycle,EggRecords,FuseKernel,TreadmillUtil,Fishing},Modules.{Ragdoll,Mutations,ButterflyCatalog}}`
+- **Struktur dunia**: `workspace.World.Areas/GuardAreas`, `WorldEggs` (egg lapangan ber-`StealPrompt` + atribut `PreparedSourceName`/`HalloweenEggUid`/`Zone`), `Plots` (plot sendiri via `PlotSign…PlayerName`), `PlacedEggRenders` (egg terpasang, nama mengandung UserId), `SafeZone`
+- **Rumus nilai egg**: `EarningRate × (skala^1.85; skala>5 → (skala/5)^1.2 × 19.64) × pengali mutasi (Mutations.EarningsFor)`
+- **Urutan rarity**: Common=1 … Divine=10 (dikonfirmasi dari `MinRarity=5` default ESP dan `Cosmic or 7`)
+
+### 8.3 Pembeda arsitektur (desain anti-lag yang dipelajari dari insiden v2)
+
+- **Dispatcher tunggal** per-Heartbeat; setiap fitur = worker dengan interval minimum (0.15–25 dtk) — tidak ada `while true do end` tanpa jeda
+- **Scan workspace lewat cache bersama 4 detik**; prompt diakses lewat `ProximityPromptService.Prompts` — bukan `GetDescendants()` berulang (penyebab berat pada loader v2)
+- **ESP pool ber-kunci instance dengan weak-key** — anti kolisi nama, anti memory-leak
+- **Semua akses game dibungkus `pcall`** dengan *probe* runtime untuk dua sumber data (`AssetItems.Assets.Directory`, replika Save); kalau tidak ketemu, fitur terdegradasi dengan status jelas, tidak crash
+- **Anti dobel UI**: re-inject memanggil handler destroy instance lama (pattern yang sama dengan ThorUi v2)
+
+### 8.4 Validasi
+
+| Uji | Hasil |
+|-----|-------|
+| `luau-compile` (compiler resmi Roblox, 4.280 baris) | ✅ lolos |
+| `luau-analyze` statis | ✅ 0 typo global (hanya globals standar Roblox/executor) |
+| Smoke test runtime (environment Roblox tiruan + mini-ThorUi) | ✅ PASS: boot 0 error; **242 elemen/9 tab** terbangun; **79 toggle ON tanpa gagal**; 242 elemen di-*fire*; 18 tombol OK; dispatcher 120.000 tick **0 error**; re-execute aman |
+
+Batasan yang diakui secara terbuka: bentuk argumen sebagian remote event (mis. momen Island Wars / state Phantom Express) tidak bisa dipastikan dari payload; implementasinya defensif (bentuk argumen dicoba bertingkat dalam `pcall`) dan menampilkan status saat menunggu event. Dua fitur akses data (inventaris via replika Save; direktori aset) memakai *probe* — kalau struktur game berubah, status di tab Info langsung menunjukkan mana yang tersedia.

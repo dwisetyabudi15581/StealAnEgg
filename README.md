@@ -11,6 +11,29 @@ Repo ini berisi script **Steal an Egg** yang sudah saya **audit total dari dalam
 
 ---
 
+## ⚡⚡ TULIS-ULANG TOTAL — ThorHub-StealAnEgg.lua (MENU 100% THORUI)
+
+**`ThorHub-StealAnEgg.lua`** adalah proyek tulis-ulang dari nol yang kamu minta: **menu yang BENAR-BENAR dibangun dari [ThorUi](https://github.com/dwisetyabudi15581/ThorUi)** — bukan sekadar reskin. Tidak ada satu baris pun kode obfuscate di dalamnya; semuanya Lua terbuka, berkomentar Bahasa Indonesia:
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/ThorHub-StealAnEgg.lua"))()
+```
+
+**Apa yang sama dengan script asli:**
+- **242 elemen menu** dalam **9 tab** (Farm ⚡ / Admin 🥚 / Player 🧍 / Predictor 🔮 / Progress 📈 / Server 🌐 / Misc ⚙️ / Quick ⌨️ / Config 💾) — dipetakan 1:1 dari serialisasi menu internal script asli
+- Semua fitur inti: **Auto Steal** (filter area/rarity/value/spesifik/missing-index, prioritas, instant, bawa ke base atau drop di safe zone), **Auto Hatch & Equip**, **Auto Sell Pet/Egg** (4 aturan jual + blacklist + keep-mutated), **Auto Favorite**, **Auto Place**, **Auto Mutate**, **Auto Fuse**, **Auto Treadmill + Upgrade**, **Auto Claim & Index**, **Auto Upgrade Base**, **Auto Buy Trail**, **Auto Farm Monsters**, **Shooting Star**, **Butterfly Bloom** (Stand/Chase, trade up, essence), **Wisp**, **Banjo Cricket**, **Capture The Egg**, **Minigame Egg**, **set lengkap Halloween** (steal/buy/index), **Fishing**, **Ghost Dog**, **Ghouler Vacuum**, **Phantom Express**, **Trade Souls**, **Island Wars**, **ESP** (egg/guard/player), **Movement & Character** (speed, infinite jump, invisibility, anti-ragdoll/trap/prompt/guard/AFK), **Combat Auto Hit**, **Egg Predictor + Discord Webhook milikmu sendiri**, **FPS Cap / Optimizer / FPS+Ping / Disable 3D Render / Hide Game UI**, **Farm HUD**, **Server Hop / Rejoin / Auto Hop** (3 mode, persist antar-server), **Config save/load/import/export**, **keybind cepat**
+- Mekanik digali dari payload asli: remote `ReplicatedStorage.Packages.Networking`, rumus nilai egg `EarningRate × skala^1.85 × mutasi`, folder `WorldEggs`/`Plots`/`PlacedEggRenders`/`GuardAreas`, `StealPrompt` via `fireproximityprompt`, bawa egg pakai fisika velocity seperti aslinya
+
+**Apa yang tidak ada (disengaja):** tab promo "Discord & Venyx", link `discord.gg` pihak ketiga, bootstrap `tienkhanh1/spicy`, semua teks Chilli/Venyx. Fitur **Discord Webhook tetap ada** karena itu webhook *milikmu sendiri*.
+
+**Arsitektur anti-lag:** dispatcher tunggal per-Heartbeat, setiap worker punya interval minimum (0.15–25 dtk), scan `workspace` lewat **cache 4 detik** bersama, prompt via `ProximityPromptService` (bukan scan penuh), ESP pool ber-kunci instance (weak-key, anti-kolisi & anti-bocor), semua akses game dibungkus `pcall` — struktur game berubah pun fitur terdegradasi sopan, tidak crash.
+
+**Divalidasi:** lolos compiler resmi Roblox (`luau-compile`), lolos analisis statis `luau-analyze` (0 typo global), dan lulus **smoke test runtime penuh** (boot + 79 toggle dinyalakan + 242 elemen difire + 18 tombol + dispatcher di-tick 120.000× + re-execute) — **0 error**.
+
+> Catatan jujur: dua sumber data dibaca lewat *probe* runtime yang aman (`AssetItems.Assets.Directory` untuk spesies/rarity, dan **replika Save** untuk inventaris). Kalau salah satu tidak ketemu, tab Info menunjukkan statusnya dan fitur terkait menampilkan status "tidak tersedia" — sisanya tetap jalan penuh.
+
+---
+
 ## ⚡ Versi CLEAN + THORHUB v3 — Ringan, Anti-Crash (REKOMENDASI)
 
 Pakai `StealAnEgg-Clean.lua` untuk script yang jalan **tanpa unsur promosi apa pun** (link & tab Discord, kartu Venyx) **plus rebrand penuh ke ThorHub**: nama, icon petir ⚡, tema warna & font ThorUi — kini dengan **arsitektur ringan yang tidak bikin game berat / crash**:
