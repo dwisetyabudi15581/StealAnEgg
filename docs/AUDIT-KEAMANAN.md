@@ -205,3 +205,14 @@ Inventaris fitur dipetakan dari **payload tahap-2** script asli yang sudah dieks
 | Smoke test runtime (environment Roblox tiruan + mini-ThorUi) | ✅ PASS: boot 0 error; **242 elemen/9 tab** terbangun; **79 toggle ON tanpa gagal**; 242 elemen di-*fire*; 18 tombol OK; dispatcher 120.000 tick **0 error**; re-execute aman |
 
 Batasan yang diakui secara terbuka: bentuk argumen sebagian remote event (mis. momen Island Wars / state Phantom Express) tidak bisa dipastikan dari payload; implementasinya defensif (bentuk argumen dicoba bertingkat dalam `pcall`) dan menampilkan status saat menunggu event. Dua fitur akses data (inventaris via replika Save; direktori aset) memakai *probe* — kalau struktur game berubah, status di tab Info langsung menunjukkan mana yang tersedia.
+
+### 8.5 Pembaruan pasca-laporan pemakai — Auto Steal + Steal Panel
+
+Laporan pemakai: *"Auto Steal tidak work; di kode asli harusnya muncul UI tambahan untuk memilih item yang mau di steal."* Investigasi ulang payload menemukan string `Steal Panel` (@1031914), state `Steal Panel Open` (default ON), teks `Auto Steal: ON/OFF`, `Eggs:`, `Sort:`, dan `Drag any panel to place it where you like` — konfirmasi bahwa script asli memang memiliki panel curi terpisah. Perbaikan:
+
+1. **Sumber target diperluas**: sebelumnya hanya `WorldEggs` (egg lapangan). Kini juga **egg terpasang milik pemain lain** via `PlacedEggRenders` (prompt `StealPrompt` aktif; pemilik dari awalan UserId pada nama model atau atribut) — sumber curi utama game ini — plus folder `HalloweenWorldEggs` dan sub-folder zona sampai kedalaman 2. Nama egg base diselesaikan bertingkat: atribut → `Repo.EggName` → teks billboard → nama model.
+2. **Steal Panel** dibangun native (Instance murni, palet/font ThorUi): daftar item real-time (nama, rarity, nilai /s, jarak, pemilik), klik baris = kunci target (lolos filter), tombol "Steal" per baris = curi langsung, sort (Best Rarity / Highest Value / Biggest Weight / Nearest), tombol Auto Steal & Halloween yang sinkron dua arah dengan menu, indikator Day/Night, drag mouse/sentuh, posisi & status terbuka tersimpan (config + getgenv), bisa dikecilkan, default terbuka (meniru state asli), dan otomatis terbuka saat Auto Steal dinyalakan.
+3. **Deteksi bawa egg diperkuat**: Tool ATAU model anak karakter (`Carrying`/`CarriedEgg`/`HeldEgg`/`Egg`); egg hilang dari dunia tanpa kita bawa → dianggap diambil pemain lain (blacklist 8 detik), bukan gagal selamanya.
+4. **Status lebih jujur**: membedakan "belum ada egg stealable terlihat" vs "N egg terlihat, semua tercegat filter" — memudahkan diagnosis saat struktur game berubah.
+
+Revalidasi: `luau-compile --only-parse` lolos (5.082 baris); smoke test harness diulang: 244 elemen/9 tab, 80 toggle ON 0 gagal, 19 tombol OK, dispatcher 120.000 tick 0 error, re-execute aman.
