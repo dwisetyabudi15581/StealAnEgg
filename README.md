@@ -11,7 +11,27 @@ Repo ini berisi script **Steal an Egg** buatan Chilli Hub yang sudah saya **audi
 
 ---
 
-## 🚀 Loadstring (Copy ke Executor)
+## 🧼 Versi CLEAN — Tanpa Promosi (REKOMENDASI)
+
+Pakai `StealAnEgg-Clean.lua` kalau mau script jalan **tanpa unsur promosi apa pun** (link & tab Discord, tombol Venyx, branding Chilli Hub / Venyx):
+
+```lua
+loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/StealAnEgg-Clean.lua"))()
+```
+
+**Cara kerjanya** (loader bisa kamu baca sendiri di repo, ±290 baris, berkomentar Bahasa Indonesia):
+
+1. Script inti `StealAnEgg.lua` dijalankan **100% utuh** — semua fitur terjaga
+2. Fetch link Discord dinamis (`.../spicy/DiscordLink`) **diblokir di level HttpGet** — link promo tidak pernah diunduh
+3. Tab "Discord & Venyx", tombol "Copy Discord Link" / "Try Venyx Now" / "Copy Venyx Loader", dan semua branding **disembunyikan dari UI**
+4. Penyalinan link promo ke **clipboard dicegah**
+5. `queue_on_teleport` — setelah Auto Hop / Rejoin, **versi clean yang jalan lagi otomatis**
+
+> Yang diblokir dari jaringan **hanya** file promo & invite Discord. Unduhan library UI Venyx dan API server Roblox tetap diizinkan supaya semua fitur berfungsi normal. Pola blokirnya bisa diedit di bagian `KONFIGURASI` paling atas file.
+
+---
+
+## 🚀 Loadstring — Versi Asli (masih memuat tab promosi)
 
 ```lua
 loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/StealAnEgg.lua"))()
@@ -84,6 +104,7 @@ Detail lengkap metode pembongkaran dan temuan: [docs/AUDIT-KEAMANAN.md](docs/AUD
 
 ```
 StealAnEgg.lua              ← Script utama (jalan apa adanya, tanpa key)
+StealAnEgg-Clean.lua        ← VERSI CLEAN — loader tanpa promosi (rekomendasi)
 docs/
   FITUR-LENGKAP.md          ← Terjemahan & penjelasan semua fitur (Bahasa Indonesia)
   AUDIT-KEAMANAN.md         ← Laporan audit keamanan & metode pembongkaran
