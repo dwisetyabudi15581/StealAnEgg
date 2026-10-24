@@ -23,6 +23,14 @@ Fitur inti script ini. Karakter kamu akan otomatis berjalan/tween ke egg yang lo
 | **Steal Missing Index Eggs** | Cuma curi egg yang belum ada di Index/koleksi kamu |
 | **Drop Eggs At Safe Zone** | Setelah mencuri, egg dijatuhkan di zona aman biar tidak bisa direbut balik |
 | **Steal Priority** | Urutan prioritas kalau ada beberapa egg sekaligus: Best Rarity / Biggest Weight / Best Mutation / Highest Value / Lowest Value |
+| **Instant Steal** (V1) | Antar egg ke safe zone dalam beberapa detik lewat lompatan steps — "Delivers the egg to the safe zone in a few seconds, needs enough Speed" |
+| **Instant Steal Steps** | Jumlah titik lepas-tengah saat mode steps (1–6, default 3) — "Higher is safer but takes longer" |
+| **Fast Delivery** | Antar pakai fast tween Instant Steal V2 alih-alih steps — untuk V1 |
+| **Instant Steal V2** | Fast tween 3000–4500 studs/s; saat dinyalakan muncul dialog konfirmasi berisi FPS & ping kamu (pola asli) |
+| **Move To Egg** | Cara menuju egg saat V2 aktif: Teleport (satu lompatan penuh) / Step (rantai langkah) |
+| **V2 Tween Speed** | Kecepatan fast tween (3000–4500, default 3300) |
+| **Instant Steal Zones** | Zona tempat V2 dipakai: Titan Temple / Light Dark / Enchanted Forest (default semua) |
+| **Teleport To Egg** (V3) | Rantai teleport: teleport ke egg → grab (tembak prompt tiap 0.08 dtk, 3 ronde) → teleport ke Star Handler / belt Admin Treadmill sambil bawa egg → belt mengantarkan ke safe zone |
 
 Rarity di game ini dari rendah ke tinggi: `Common → Uncommon → Rare → Epic → Legendary → Mythic → Cosmic → Secret → Eternal → Divine`
 

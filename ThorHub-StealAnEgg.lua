@@ -741,7 +741,11 @@ function Movement.FlyTo(pos, done, step)
 end
 
 -- bawa egg dengan fisika velocity (aman antar-collision server)
-function Movement.CarryTo(pos, done, timeout, lift)
+-- speedMult : pengali kecepatan dasar (WalkSpeed x1.5) — dipakai mode Normal
+--             (membuat slider "Carry Speed" benar-benar berpengaruh).
+-- speedAbs  : kecepatan absolut studs/dtk — dipakai mode Pull Instant Steal V2
+--             (default asli 3300, jangkauan 3000-4500).
+function Movement.CarryTo(pos, done, timeout, speedMult, speedAbs)
     timeout = timeout or 30
     local until_ = os.clock() + timeout
     local heldY = nil
@@ -765,7 +769,8 @@ function Movement.CarryTo(pos, done, timeout, lift)
         end
         local delta = pos - root.Position
         delta = Vector3.new(delta.X, 0, delta.Z)
-        local spd = math.min(Movement.WalkSpeed() * 1.5, delta.Magnitude / 0.05)
+        local base = speedAbs or (Movement.WalkSpeed() * 1.5 * (speedMult or 1))
+        local spd = math.min(base, delta.Magnitude / 0.05)
         local vel = Vector3.new(0, 0, 0)
         if delta.Magnitude > 3 then
             vel = delta.Unit * spd
@@ -1537,10 +1542,72 @@ local Steal = {
     -- lintas pembaruan cache; di-resolve ulang tiap pick)
     lock = nil,
     missingIndex = false, dropSafe = false, priority = "Best Rarity",
-    tweenSpeed = 100, carrySpeed = 100, instant = false, v2 = false, v3 = true,
+    tweenSpeed = 100, carrySpeed = 100, instant = false, v2 = false, v3 = false,
+    -- keluarga metode Instant Steal (pola SafeCarry asli):
+    -- V1 "Instant Steal"  : antar steps + titik lepas tengah (LineDrop)
+    -- V1 "Fast Delivery" : antar pakai fast tween (sama jalur dgn V2)
+    -- V2 "Instant Steal V2": fast tween 3000-4500 studs/s, zona terbatas
+    -- V3 "Teleport To Egg": rantai teleport — ke egg, grab, lalu ke Star
+    --                        Handler / belt Admin Treadmill (belt mengantar)
+    instantSteps = 3, fastDelivery = false,
+    v2Approach = "Teleport", v2Speed = 3300,
+    v2Zones = { ["Titan Temple"] = true, ["Light Dark"] = true, ["Enchanted Forest"] = true },
     busy = false, bad = {}, stolen = 0, best = nil, bestRank = -1,
     history = {}, lastDeliver = 0, hwDelivered = 0,
 }
+
+-- ==== zona metode instant (peta zona asli) ====
+local V3_ZONES = {
+    ["Prehistoric"] = true, ["Cosmic"] = true, ["Cherry Blossom"] = true,
+    ["Titan Temple"] = true, ["Light Dark"] = true, ["Enchanted Forest"] = true,
+}
+
+local function zoneKey(egg)
+    local z = tostring((egg and (egg.Area or egg.Zone)) or "")
+    if z == "CherryBlossom" then z = "Cherry Blossom" end
+    return z
+end
+
+local function v2ZoneOk(egg)
+    local z = zoneKey(egg)
+    if z == "" then return false end
+    return Steal.v2Zones[z] == true
+end
+
+local function v3ZoneOk(egg)
+    return V3_ZONES[zoneKey(egg)] == true
+end
+
+-- mode antar egg (pola DeliveryMode asli; V3 punya jalur sendiri).
+-- Prioritas: V2 (zona lolos) > V1 Fast Delivery (Pull) > V1 Steps > Normal.
+local function deliveryMode(egg)
+    if Steal.v2 and v2ZoneOk(egg) then return "Pull" end
+    if Steal.instant then
+        if Steal.fastDelivery then return "Pull" end
+        return "Steps"
+    end
+    return "Normal"
+end
+
+-- pengukur FPS/ping untuk dialog konfirmasi Instant Steal V2 (pola asli)
+function Steal.V2Fps()
+    local t0, n = os.clock(), 0
+    while os.clock() - t0 < 0.5 do
+        RunService.Heartbeat:Wait()
+        n = n + 1
+    end
+    return n / math.max(os.clock() - t0, 0.01)
+end
+
+function Steal.V2Ping()
+    local ok, v = pcall(function()
+        return Stats.Network.ServerStatsItem["Data Ping"]:GetValue()
+    end)
+    if ok and tonumber(v) then return tonumber(v) end
+    local ok2, p = pcall(function() return LocalPlayer:GetNetworkPing() end)
+    if ok2 and tonumber(p) then return tonumber(p) * 1000 end
+    return 0
+end
 
 local function stealAreaOk(egg)
     if next(Steal.areas) == nil then return true end
@@ -1670,12 +1737,31 @@ local function isCarrying()
     return false
 end
 
-local function deliverEgg()
+-- ==== mode antar "Steps" (V1, pola LineDrop asli) ====
+-- lompat 350 stud per langkah menuju rumah, dengan jeda micro di titik
+-- tengah (fraksi InstantMidDrops dari slider "Instant Steal Steps").
+local function deliverSteps(target)
+    local root = Movement.Root()
+    if not root then return end
+    local from = root.Position
+    local steps = math.clamp(math.floor(tonumber(Steal.instantSteps) or 3), 1, 6)
+    local deadline = os.clock() + 25
+    for i = 1, steps - 1 do
+        if not isCarrying() or os.clock() > deadline then return end
+        local mid = from:Lerp(target, i / steps)
+        Movement.FlyTo(mid, function() return not isCarrying() or os.clock() > deadline end, 350)
+        task.wait(0.45) -- DropWait asli
+    end
+    Movement.FlyTo(target, function() return not isCarrying() or os.clock() > deadline end, 350)
+end
+
+local function deliverEgg(egg)
     -- bawa egg pulang: ke base (auto-redeem) atau drop di safe zone.
     -- Untuk egg event Halloween: antar ke SafeZone dimensi Halloween lalu
     -- minta drop via RF (pola asli AskDropEgg).
+    -- Mode antar (pola SafeCarry asli): Pull (V2/Fast Delivery) →
+    -- Steps (V1) → Normal.
     local claimed = Movement.Claim("steal")
-    local speed = Steal.carrySpeed / 100
 
     if P(function() return workspace:GetAttribute("HalloweenCarrying") end) == true then
         local sz = Repo.HalloweenSafeZone()
@@ -1688,7 +1774,7 @@ local function deliverEgg()
                 local mz = math.max(sz.Size.Z / 2 - 6, 0)
                 local goal = sz.CFrame:PointToWorldSpace(Vector3.new(
                     math.clamp(rel.X, -mx, mx), 0, math.clamp(rel.Z, -mz, mz)))
-                Movement.CarryTo(goal, function() return not isCarrying() end, 60, speed)
+                Movement.CarryTo(goal, function() return not isCarrying() end, 60, Steal.carrySpeed / 100)
             end
             Repo.Invoke("RF/HalloweenDimension/AskDropEgg")
             task.wait(0.6)
@@ -1701,7 +1787,8 @@ local function deliverEgg()
         return
     end
 
-    Tasks.Status("steal", "HOLD EGG  |  delivering")
+    local mode = deliveryMode(egg)
+    Tasks.Status("steal", "HOLD EGG  |  delivering (" .. mode .. ")")
     local wantSafe = Steal.dropSafe
     local home = nil
     if wantSafe then
@@ -1733,9 +1820,18 @@ local function deliverEgg()
         end
     end
 
-    Movement.CarryTo(target, function()
-        return not isCarrying()
-    end, 45, speed)
+    if mode == "Pull" then
+        -- fast tween 3000-4500 studs/s (Instant Steal V2 / Fast Delivery)
+        Movement.CarryTo(target, function()
+            return not isCarrying()
+        end, 12, nil, Steal.v2Speed)
+    elseif mode == "Steps" then
+        deliverSteps(target)
+    else
+        Movement.CarryTo(target, function()
+            return not isCarrying()
+        end, 45, Steal.carrySpeed / 100)
+    end
 
     -- beri kesempatan server redeem (record berubah dari Carried)
     local t = os.clock() + 8
@@ -1797,9 +1893,20 @@ local function nearestCarryPrompt(egg)
     return bestPrompt
 end
 
+-- ==== langkah pendekatan menuju egg ====
+-- "Move To Egg" Instant Steal V2 (pola asli): Teleport = lompatan penuh
+-- satu frame; Step = rantai langkah kecil (dipakai juga V1/Normal).
+local function approachStep(egg)
+    if Steal.v2 and Steal.v2Approach == "Teleport" and v2ZoneOk(egg) then
+        return math.huge -- teleport penuh satu frame
+    end
+    if Steal.instant then return 60 end
+    return Steal.tweenSpeed / 100 * 40
+end
+
 -- ==== alur curi egg AREA (dunia utama, tanpa prompt di egg) ====
 local function stealFieldEgg(egg)
-    local step = Steal.instant and 60 or (Steal.tweenSpeed / 100 * 40)
+    local step = approachStep(egg)
     local attempt = 0
     while attempt < 4 and not isCarrying() do
         attempt = attempt + 1
@@ -1863,7 +1970,7 @@ end
 -- ==== alur curi egg BER-PROMPT (Halloween / base pemain lain) ====
 local function stealPromptEgg(egg)
     local model, prompt = egg.Model, egg.Prompt
-    local step = Steal.instant and 60 or (Steal.tweenSpeed / 100 * 40)
+    local step = approachStep(egg)
     local attempt = 0
     while attempt < 3 and not isCarrying() do
         attempt = attempt + 1
@@ -1901,33 +2008,188 @@ local function stealPromptEgg(egg)
     return "fail"
 end
 
+-- ==== Instant Steal V3: rantai teleport (pola asli) ====
+-- ke egg (BottomCFrame + 3Y) → grab (tembak prompt tiap 0.08 dtk, 3 ronde
+-- x 2.5 dtk mengikuti egg) → teleport ke Star Handler / belt Admin Treadmill
+-- sambil membawa egg → belt mengantarkan ke safe zone.
+
+local V3_STAR_FALLBACK = Vector3.new(540, 70.4, -397)
+local V3_BELT_FALLBACK = Vector3.new(540.05, 71.6, -369.7)
+
+local function v3StarHandlerStand()
+    local w = workspace:FindFirstChild("World")
+    local b = w and w:FindFirstChild("Build")
+    local sh = b and b:FindFirstChild("StarHandler")
+    if sh and sh:IsA("Model") then
+        local ok, cf = pcall(function() return sh:GetPivot() end)
+        if ok and typeof(cf) == "CFrame" then
+            return cf.Position + cf.LookVector * 6 + Vector3.new(0, 3, 0)
+        end
+    end
+    return V3_STAR_FALLBACK
+end
+
+local function v3AdminBeltStand()
+    -- pola FindAdminBelt asli: cari permukaan belt treadmill admin; fallback
+    -- ke spot tersimpan (540.05, 71.6, -369.7)
+    local at = workspace:FindFirstChild("AdminTreadmill")
+    if at then
+        local best, bestArea = nil, 0
+        for _, p in ipairs(at:GetDescendants()) do
+            if p:IsA("BasePart") then
+                local ok, area = pcall(function() return p.Size.X * p.Size.Z end)
+                if ok and area and area > bestArea then best, bestArea = p, area end
+            end
+        end
+        if best then
+            return best.Position + Vector3.new(0, best.Size.Y / 2 + 3, 0)
+        end
+    end
+    return V3_BELT_FALLBACK
+end
+
+local function v3Teleport(pos)
+    local root = Movement.Root()
+    if not root then return false end
+    P(function()
+        root.CFrame = CFrame.new(pos)
+        root.AssemblyLinearVelocity = Vector3.new(0, 0, 0)
+        root.AssemblyAngularVelocity = Vector3.new(0, 0, 0)
+    end)
+    return true
+end
+
+local function v3StarHandlerPresent()
+    local w = workspace:FindFirstChild("World")
+    local b = w and w:FindFirstChild("Build")
+    local sh = b and b:FindFirstChild("StarHandler")
+    return sh and sh:IsA("Model") and true or false
+end
+
+local function v3Deliver()
+    -- Star Handler hadir? antar ke sana; kalau tidak, naik belt Admin
+    -- Treadmill (pola asli: N and StarHandler or AdminTreadmill).
+    local toStar = v3StarHandlerPresent()
+    local pos = toStar and v3StarHandlerStand() or v3AdminBeltStand()
+    if not v3Teleport(pos) then return false end
+    -- tunggu sampai egg tidak dibawa lagi (max 4 dtk; jaga posisi ala V3Hold:
+    -- teleport balik kalau terdorong > 15 stud)
+    local tEnd = os.clock() + 4
+    while isCarrying() and os.clock() < tEnd do
+        local root = Movement.Root()
+        if root and (root.Position - pos).Magnitude > 15 then
+            v3Teleport(pos)
+        end
+        task.wait(0.1)
+    end
+    return not isCarrying()
+end
+
+local function stealEggV3(egg)
+    Tasks.Status("steal", "Instant Steal V3  |  teleporting to " .. tostring(egg.Name))
+    for round = 1, 3 do
+        if round > 1 then
+            Tasks.Status("steal", "Instant Steal V3  |  missed, following the egg (try " .. round .. "/3)")
+        end
+        local deadline = os.clock() + 2.5
+        local taken = false
+        while os.clock() < deadline and not isCarrying() do
+            local pos = nil
+            local rec = fieldRecord(egg.Uid)
+            if rec then
+                if rec.State == "Claimed" then
+                    taken = true
+                    break
+                end
+                if rec.State == "Carried" then
+                    if tonumber(rec.CarrierUserId) ~= LocalPlayer.UserId then
+                        taken = true
+                        break
+                    end
+                end
+                if typeof(rec.BottomCFrame) == "CFrame" then
+                    pos = rec.BottomCFrame.Position
+                end
+            end
+            local m = egg.Model
+            if not pos and m and m.Parent then pos = modelPos(m) end
+            if not pos then return "gone" end
+            -- teleport tepat di atas egg (pola asli: BottomCFrame + 3Y)
+            v3Teleport(pos + Vector3.new(0, 3, 0))
+            -- tembak prompt (pola asli: tiap 0.08 dtk)
+            local prompt = egg.Prompt
+            if not prompt or not prompt.Parent then
+                if egg.Kind == "Field" then prompt = nearestCarryPrompt(egg) end
+            end
+            if prompt then
+                pcall(function() prompt.HoldDuration = 0 end)
+                if fireproximityprompt then
+                    pcall(fireproximityprompt, prompt)
+                else
+                    pcall(function() prompt:InputHoldBegin() prompt:InputHoldEnd() end)
+                end
+            end
+            task.wait(0.08)
+        end
+        if taken then return "taken" end
+        if isCarrying() then
+            Tasks.Status("steal", "Instant Steal V3  |  teleporting to "
+                .. (v3StarHandlerPresent() and "the Star Handler" or "the Admin Treadmill")
+                .. " with the egg")
+            if v3Deliver() then
+                return "delivered"
+            end
+            return "ok" -- masih memegang: lanjut deliverEgg mode biasa
+        end
+        task.wait(0.2)
+    end
+    Tasks.Status("steal", "Instant Steal V3  |  could not grab the egg")
+    return "fail"
+end
+
+-- statistik sukses curi (dipakai semua jalur, termasuk V3)
+local function stealSuccess(egg)
+    Steal.stolen = Steal.stolen + 1
+    table.insert(Steal.history, { name = egg.Name, rarity = egg.RarityLabel, value = egg.Value, at = os.time() })
+    if #Steal.history > 20 then table.remove(Steal.history, 1) end
+    if egg.RarityNum >= Steal.bestRank then
+        Steal.bestRank = egg.RarityNum
+        Steal.best = { name = egg.Name, rarity = egg.RarityLabel, value = egg.Value }
+    end
+    Notify("⚡ Egg dicuri!", tostring(egg.Name) .. " [" .. tostring(egg.RarityLabel) .. "]", 4)
+    Webhook.Post("Egg Stolen", string.format("**%s** [%s] — value %s/s",
+        tostring(egg.Name), tostring(egg.RarityLabel), fmtNum(egg.Value)), egg.RarityNum)
+end
+
 local function stealEgg(egg)
     local claimed = Movement.Claim("steal")
     if not claimed then
         Steal.busy = false
         return
     end
-    Tasks.Status("steal", "FLY TO EGG  |  " .. tostring(egg.Name))
     local res
-    if egg.Kind == "Field" and not egg.Prompt then
-        res = stealFieldEgg(egg)
+    if Steal.v3 and v3ZoneOk(egg) then
+        -- Instant Steal V3: rantai teleport + belt/Star Handler (pola asli)
+        res = stealEggV3(egg)
     else
-        res = stealPromptEgg(egg)
+        Tasks.Status("steal", "FLY TO EGG  |  " .. tostring(egg.Name))
+        if egg.Kind == "Field" and not egg.Prompt then
+            res = stealFieldEgg(egg)
+        else
+            res = stealPromptEgg(egg)
+        end
     end
 
     if Steal.lock and Steal.lock == egg.Key then Steal.lock = nil end
-    if res == "ok" and isCarrying() then
-        Steal.stolen = Steal.stolen + 1
-        table.insert(Steal.history, { name = egg.Name, rarity = egg.RarityLabel, value = egg.Value, at = os.time() })
-        if #Steal.history > 20 then table.remove(Steal.history, 1) end
-        if egg.RarityNum >= Steal.bestRank then
-            Steal.bestRank = egg.RarityNum
-            Steal.best = { name = egg.Name, rarity = egg.RarityLabel, value = egg.Value }
-        end
-        Notify("⚡ Egg dicuri!", tostring(egg.Name) .. " [" .. tostring(egg.RarityLabel) .. "]", 4)
-        Webhook.Post("Egg Stolen", string.format("**%s** [%s] — value %s/s",
-            tostring(egg.Name), tostring(egg.RarityLabel), fmtNum(egg.Value)), egg.RarityNum)
-        deliverEgg()
+    if res == "delivered" then
+        -- V3 selesai total: egg sudah diantar belt / Star Handler
+        stealSuccess(egg)
+        Tasks.Status("steal", "Instant Steal V3  |  delivered")
+        Movement.Release("steal")
+        Steal.busy = false
+    elseif res == "ok" and isCarrying() then
+        stealSuccess(egg)
+        deliverEgg(egg)
     elseif res == "gone" or res == "taken" then
         Steal.bad[egg.Key] = os.clock() + 8
         Tasks.Status("steal", "Egg diambil pemain lain / sudah hilang, lanjut target berikutnya")
@@ -4771,9 +5033,9 @@ local function reg(key, elem)
     return elem
 end
 
-local function mkToggle(tab, key, name, default, cb)
+local function mkToggle(tab, key, name, default, cb, note)
     local e = tab:AddToggle({
-        Name = name, Default = default,
+        Name = name, Default = default, Note = note or nil,
         Callback = function(v)
             Config.Set(key, v)
             if cb then cb(v) end
@@ -4783,10 +5045,10 @@ local function mkToggle(tab, key, name, default, cb)
     return reg(key, e)
 end
 
-local function mkSlider(tab, key, name, min, max, default, inc, suffix, cb)
+local function mkSlider(tab, key, name, min, max, default, inc, suffix, cb, note)
     local e = tab:AddSlider({
         Name = name, Min = min, Max = max, Default = default,
-        Increment = inc or 1, Suffix = suffix or "",
+        Increment = inc or 1, Suffix = suffix or "", Note = note or nil,
         Callback = function(v)
             Config.Set(key, v)
             if cb then cb(v) end
@@ -4796,9 +5058,9 @@ local function mkSlider(tab, key, name, min, max, default, inc, suffix, cb)
     return reg(key, e)
 end
 
-local function mkDropdown(tab, key, name, values, default, cb)
+local function mkDropdown(tab, key, name, values, default, cb, note)
     local e = tab:AddDropdown({
-        Name = name, Values = values, Default = default,
+        Name = name, Values = values, Default = default, Note = note or nil,
         Callback = function(v)
             Config.Set(key, v)
             if cb then cb(v) end
@@ -4808,9 +5070,10 @@ local function mkDropdown(tab, key, name, values, default, cb)
     return reg(key, e)
 end
 
-local function mkMulti(tab, key, name, values, cb)
+local function mkMulti(tab, key, name, values, cb, note, defaults)
     local e = tab:AddDropdown({
-        Name = name, Values = values, Default = {}, Multi = true,
+        Name = name, Values = values, Default = defaults or {}, Multi = true,
+        Note = note or nil,
         Callback = function(list)
             if type(list) ~= "table" then return end
             Config.Set(key, list)
@@ -4912,7 +5175,55 @@ mkDropdown(FarmTab, "farm/priority", "Steal Priority",
     "Best Rarity", function(v) Steal.priority = v end)
 mkSlider(FarmTab, "farm/tweenspeed", "Tween Speed", 50, 120, 100, 5, "", function(v) Steal.tweenSpeed = v end)
 mkSlider(FarmTab, "farm/carryspeed", "Carry Speed", 80, 120, 100, 5, "", function(v) Steal.carrySpeed = v end)
-mkToggle(FarmTab, "farm/instant", "Instant Steal", false, function(v) Steal.instant = v end)
+-- keluarga metode Instant Steal (pola SafeCarry script asli):
+-- V1 antar steps / Fast Delivery, V2 fast tween (zona terbatas),
+-- V3 rantai teleport lewat Star Handler / Admin Treadmill.
+mkToggle(FarmTab, "farm/instant", "Instant Steal", false, function(v) Steal.instant = v end,
+    "Delivers the egg to the safe zone in a few seconds, needs enough Speed")
+mkSlider(FarmTab, "farm/instantsteps", "Instant Steal Steps", 1, 6, 3, 1, "",
+    function(v) Steal.instantSteps = v end,
+    "Higher is safer but takes longer")
+mkToggle(FarmTab, "farm/fastdelivery", "Fast Delivery", false, function(v) Steal.fastDelivery = v end,
+    "Delivers with the Instant Steal V2 fast tween instead of using steps")
+mkToggle(FarmTab, "farm/v2", "Instant Steal V2", false, function(v)
+    Steal.v2 = v
+    if v then
+        -- pola asli: dialog konfirmasi dengan info FPS/ping sebelum menyalakan
+        task.spawn(function()
+            local okF, fps = P(function() return Steal.V2Fps() end)
+            local okP, ping = P(function() return Steal.V2Ping() end)
+            fps = (okF and tonumber(fps)) and math.floor(fps) or 0
+            ping = (okP and tonumber(ping)) and math.floor(ping) or 0
+            P(function()
+                Window:Confirm({
+                    Title = "Instant Steal V2",
+                    Content = string.format(
+                        "Your FPS %d, ping %d ms.\nUsing it with Invisibility may cause some bugs.",
+                        fps, ping),
+                    ConfirmText = "Turn On",
+                    CancelText = "Cancel",
+                    OnConfirm = function() end,
+                    OnCancel = function()
+                        local el = Config.Elements["farm/v2"]
+                        if el then el:Set(false) end
+                    end,
+                })
+            end)
+        end)
+    end
+end, "Super fast tween delivery (3000-4500 studs/s), only in selected zones")
+mkDropdown(FarmTab, "farm/v2approach", "Move To Egg", { "Teleport", "Step" }, "Teleport",
+    function(v) Steal.v2Approach = v end,
+    "How to reach the egg while Instant Steal V2 is on")
+mkSlider(FarmTab, "farm/v2speed", "V2 Tween Speed", 3000, 4500, 3300, 50, "",
+    function(v) Steal.v2Speed = v end, "Speed of the fast tween in studs/s")
+mkMulti(FarmTab, "farm/v2zones", "Instant Steal Zones",
+    { "Titan Temple", "Light Dark", "Enchanted Forest" },
+    function(l) Steal.v2Zones = listToSet(l) end,
+    "Zones where Instant Steal V2 is used",
+    { "Titan Temple", "Light Dark", "Enchanted Forest" })
+mkToggle(FarmTab, "farm/v3", "Teleport To Egg", false, function(v) Steal.v3 = v end,
+    "(V3) Teleport to the egg, then deliver via Star Handler / Admin Treadmill")
 mkStatus(FarmTab, "steal", "Steal: idle")
 mkToggle(FarmTab, "farm/panelauto", "Steal Panel Auto Open", true, function(v) StealPanel.autoOpen = v end)
 mkButton(FarmTab, "Open Steal Panel", function() StealPanel.Show() end)
