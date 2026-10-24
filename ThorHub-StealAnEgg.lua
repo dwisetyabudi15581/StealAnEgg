@@ -639,6 +639,64 @@ function Repo.SnapshotOK()
     return type(snapCache) == "table" and type(snapCache.Records) == "table"
 end
 
+-- ==== H2. Modul EggState game (opsional, probe aman) ====
+-- Script asli memakai modul EggState game untuk fallback curi saat
+-- SmartPromptPart tidak ketemu: EggState.CarryFieldEgg(uid) dan
+-- EggState.DropFieldEgg(reason). Modul dicari sekali (ModuleScript
+-- bernama "EggState" di bawah Packages/Shared/ReplicatedStorage);
+-- bila tidak ditemukan, fitur terdegradasi sopan lewat prompt biasa.
+local eggStateMod, eggStateTried = nil, false
+function Repo.EggStateModule()
+    if eggStateMod or eggStateTried then return eggStateMod end
+    eggStateTried = true
+    local roots = {}
+    local pk = ReplicatedStorage:FindFirstChild("Packages")
+    if pk then table.insert(roots, pk) end
+    local sh = ReplicatedStorage:FindFirstChild("Shared")
+    if sh then table.insert(roots, sh) end
+    table.insert(roots, ReplicatedStorage)
+    for _, root in ipairs(roots) do
+        local kids = P(function() return root:GetDescendants() end)
+        if type(kids) == "table" then
+            for _, inst in ipairs(kids) do
+                local isMod = P(function()
+                    return inst:IsA("ModuleScript") and inst.Name == "EggState"
+                end)
+                if isMod then
+                    local mod = P(require, inst)
+                    if type(mod) == "table"
+                        and (type(mod.CarryFieldEgg) == "function"
+                            or type(mod.ReadFieldEggs) == "function") then
+                        eggStateMod = mod
+                        return eggStateMod
+                    end
+                end
+            end
+        end
+    end
+    return nil
+end
+
+-- fallback curi via modul game (pola C[13] asli); return true bila terpakai
+function Repo.CarryFieldEgg(uid)
+    local m = Repo.EggStateModule()
+    if m and type(m.CarryFieldEgg) == "function" and type(uid) == "string" and uid ~= "" then
+        P(m.CarryFieldEgg, uid)
+        return true
+    end
+    return false
+end
+
+-- lepas egg via modul game (pola WrongEgg asli: DropFieldEgg + tunggu <=1s)
+function Repo.DropFieldEgg()
+    local m = Repo.EggStateModule()
+    if m and type(m.DropFieldEgg) == "function" then
+        P(m.DropFieldEgg, "PlayerRequest")
+        return true
+    end
+    return false
+end
+
 -- ==== I. Malam / siklus area ====
 local cycleMod = nil
 function Repo.IsNight()
@@ -787,28 +845,69 @@ function Movement.CarryTo(pos, done, timeout, speedMult, speedAbs)
 end
 
 -- deteksi "saya memegang egg": weld ke model yang dibawa
-function Movement.HeldModel()
-    local root = Movement.Root()
+-- model egg (nama 32 char) yang sedang di-weld ke KARAKTER KITA.
+-- Ini pola "HeldByMe" script asli: model egg dibawa muncul di akar
+-- workspace dengan nama GUID 32-char dan di-weld ke karakter.
+-- Tool biasa (pet, dll) TIDAK dianggap membawa egg.
+function Movement.MyHeldEggModel()
     local char = LocalPlayer.Character
-    if not root or not char then return nil end
-    for _, tool in ipairs(char:GetChildren()) do
-        if tool:IsA("Tool") then
-            return tool
+    if not char then return nil end
+    for _, m in ipairs(workspace:GetChildren()) do
+        local isEggModel = P(function() return m:IsA("Model") and #m.Name == 32 end)
+        if isEggModel then
+            local welded = P(function()
+                for _, j in ipairs(m:GetDescendants()) do
+                    if j:IsA("JointInstance") or j:IsA("WeldConstraint") or j:IsA("RigidConstraint") then
+                        local p0, p1 = j.Part0, j.Part1
+                        for _, part in ipairs({ p0, p1 }) do
+                            if typeof(part) == "Instance" and part:IsDescendantOf(char) then
+                                return true
+                            end
+                        end
+                    end
+                end
+                return false
+            end)
+            if welded then return m end
         end
     end
     return nil
 end
 
 function Movement.CarryingUid()
-    -- egg yang sedang dibawa: cari weld antara karakter dan model egg di workspace
+    -- uid egg yang sedang dibawa (model weld / tool bernama uid), bukan tool biasa
+    local held = Movement.MyHeldEggModel()
+    if held then return tostring(held.Name), held end
     local char = LocalPlayer.Character
-    if not char then return nil, nil end
-    local carried = char:FindFirstChildOfClass("Tool")
-    if carried then
-        local uid = carried:GetAttribute("Uid") or carried.Name
-        return tostring(uid), carried
+    if char then
+        for _, t in ipairs(char:GetChildren()) do
+            if P(function() return t:IsA("Tool") end) then
+                local nm = tostring(t.Name)
+                local au = P(function() return t:GetAttribute("Uid") end)
+                if #nm == 32 then return nm, t end
+                if type(au) == "string" and #au >= 8 then return au, t end
+            end
+        end
     end
     return nil, nil
+end
+
+-- keluar treadmill bila root ter-anchor (pola asli "getting off the
+-- treadmill first"): CarryTo pakai velocity — root anchored = gerak mati.
+function Movement.ExitBeltIfAnchored()
+    local root = Movement.Root()
+    if not root then return false end
+    if not P(function() return root.Anchored end) then return false end
+    local hum = Movement.Humanoid()
+    if hum then
+        pcall(function() hum:UnequipTools() end)
+        pcall(function() hum.Jump = true end)
+    end
+    task.wait(0.15)
+    if P(function() return root.Anchored end) then
+        pcall(function() root.Anchored = false end)
+    end
+    return true
 end
 
 --────────────────────────────[ CHARACTER FEATURES HELPERS ]────────────────────────────
@@ -1672,7 +1771,10 @@ local function pickStealTarget()
     local best, bestScore = nil, -math.huge
     local now = os.clock()
     for _, egg in ipairs(targets) do
-        if not (Steal.bad[egg.Key] and Steal.bad[egg.Key] > now) then
+        -- AUTO hanya egg lapangan + Halloween (pola asli); egg base pemain
+        -- lain hanya bisa dicuri manual lewat tombol Steal di panel.
+        if egg.Kind ~= "Base"
+            and not (Steal.bad[egg.Key] and Steal.bad[egg.Key] > now) then
             if stealFilterOk(egg) then
                 local sc = stealScore(egg)
                 if sc > bestScore then
@@ -1684,57 +1786,75 @@ local function pickStealTarget()
     return best
 end
 
-local function fireStealPrompt(egg)
-    local prompt = egg.Prompt
-    if not prompt or not prompt.Parent then return false end
-    pcall(function() prompt.HoldDuration = 0 end)
-    if fireproximityprompt then
-        pcall(fireproximityprompt, prompt)
-        return true
+-- ==== deteksi "sedang membawa egg" (pola HeldByMe asli + cache anti-flicker) ====
+-- Script asli TIDAK menebak dari "ada Tool apa pun" (pet biasa BUKAN egg!).
+-- Ia mengecek: (a) record snapshot ber-state Carried dengan carrier kita,
+-- (b) model egg GUID-32 di workspace yang di-weld ke karakter (HeldByMe),
+-- (c) atribut HalloweenCarrying — lalu watchdog 0.2 dtk dengan histeresis:
+-- baru dianggap lepas setelah hilang > 0.8 dtk (pola GuessedDrop asli),
+-- supaya callback cancel CarryTo tidak salah abort di tengah jalan.
+-- Hasil dibaca dari CACHE — murah dan stabil, bukan scan tiap frame.
+
+local carryState = { on = false, uid = nil, seenAt = 0 }
+Steal.carryWatch = false -- disetel true oleh task Halloween (p4)
+
+local function detectCarryNow()
+    -- return uid egg yang sedang dibawa (string), atau nil
+    local char = LocalPlayer.Character
+    if not char then return nil end
+    -- (a) record snapshot: server bilang kita pembawanya (sinyal terkuat)
+    local snap = Repo.FieldSnapshot(1.2)
+    if type(snap) == "table" and type(snap.Records) == "table" then
+        local myId = LocalPlayer.UserId
+        for _, rec in pairs(snap.Records) do
+            if type(rec) == "table" and rec.State == "Carried"
+                and tonumber(rec.CarrierUserId) == myId then
+                return tostring(rec.Uid or "")
+            end
+        end
     end
-    -- fallback: sentuh prompt secara langsung (executor tanpa fire helper)
-    pcall(function() prompt:InputHoldBegin() prompt:InputHoldEnd() end)
-    return true
-end
-
--- ==== deteksi "sedang membawa egg" (multi-sinyal) ====
-
-local function carriedUidByMe()
-    -- record snapshot: ada egg ber-state Carried dengan CarrierUserId kita
-    local snap = Repo.FieldSnapshot(1.5)
-    if type(snap) ~= "table" or type(snap.Records) ~= "table" then return nil end
-    local myId = LocalPlayer.UserId
-    for _, rec in pairs(snap.Records) do
-        if type(rec) == "table" and rec.State == "Carried"
-            and tonumber(rec.CarrierUserId) == myId then
-            return tostring(rec.Uid or "")
+    -- (b) model egg GUID-32 di-weld ke karakter kita (HeldByMe)
+    local held = Movement.MyHeldEggModel()
+    if held then return tostring(held.Name) end
+    -- (c) atribut dimensi Halloween (pola asli)
+    if P(function() return workspace:GetAttribute("HalloweenCarrying") end) == true then
+        return "halloween"
+    end
+    -- (d) Tool bernama GUID-32 / ber-atribut Uid panjang — BUKAN tool biasa
+    for _, t in ipairs(char:GetChildren()) do
+        if P(function() return t:IsA("Tool") end) then
+            local nm = tostring(t.Name)
+            local au = P(function() return t:GetAttribute("Uid") end)
+            if #nm == 32 then return nm end
+            if type(au) == "string" and #au >= 8 then return au end
         end
     end
     return nil
 end
 
-local function isCarrying()
-    local char = LocalPlayer.Character
-    if not char then return false end
-    if char:FindFirstChildOfClass("Tool") then return true end
-    -- beberapa versi game memakai model di karakter, bukan Tool
-    for _, nm in ipairs({ "Carrying", "CarriedEgg", "HeldEgg", "Egg" }) do
-        if char:FindFirstChild(nm) then return true end
-    end
-    -- atribut global dimensi Halloween (pola asli)
-    if P(function() return workspace:GetAttribute("HalloweenCarrying") end) == true then
-        return true
-    end
-    -- record snapshot: egg sedang kita bawa
-    if carriedUidByMe() ~= nil then return true end
-    -- model GUID di akar workspace yang di-weld ke karakter kita
-    for _, m in ipairs(workspace:GetChildren()) do
-        if P(function() return m:IsA("Model") and #m.Name == 32 end)
-            and weldCarrier(m) == char then
-            return true
+Tasks.Add("stealcarry", 0.2, function()
+    -- watchdog hanya hidup saat fitur curi aktif / sedang membawa
+    if not (Steal.on or Steal.busy or carryState.on or Steal.carryWatch) then return end
+    local uid = detectCarryNow()
+    if uid then
+        carryState.on = true
+        carryState.uid = uid
+        carryState.seenAt = os.clock()
+    elseif carryState.on then
+        -- histeresis: hilang > 0.8 dtk baru dianggap lepas
+        if os.clock() - carryState.seenAt > 0.8 then
+            carryState.on = false
+            carryState.uid = nil
         end
     end
-    return false
+end)
+
+local function isCarrying()
+    return carryState.on == true
+end
+
+local function carryingUid()
+    return carryState.uid
 end
 
 -- ==== mode antar "Steps" (V1, pola LineDrop asli) ====
@@ -1762,6 +1882,9 @@ local function deliverEgg(egg)
     -- Mode antar (pola SafeCarry asli): Pull (V2/Fast Delivery) →
     -- Steps (V1) → Normal.
     local claimed = Movement.Claim("steal")
+
+    -- pola asli: jangan antar sambil naik treadmill (root anchored = gerak mati)
+    Movement.ExitBeltIfAnchored()
 
     if P(function() return workspace:GetAttribute("HalloweenCarrying") end) == true then
         local sz = Repo.HalloweenSafeZone()
@@ -1842,6 +1965,13 @@ local function deliverEgg(egg)
         -- mungkin belum sampai zona redeem: lepas tool di dekat target
         local hum = Movement.Humanoid()
         if hum then pcall(function() hum:UnequipTools() end) end
+        task.wait(1)
+    end
+    if isCarrying() then
+        Tasks.Status("steal", "Delivery stuck — egg belum masuk zona redeem, mencoba lagi")
+    else
+        Tasks.Status("steal", "Delivered")
+        Steal.lastDeliver = os.clock()
     end
     Movement.Release("steal")
     Steal.busy = false
@@ -1864,10 +1994,11 @@ end
 -- "SmartPromptPart" (anak workspace) berisi ProximityPrompt
 -- "CarryAreaEgg". Pilih part terdekat ke EGG, lalu pastikan tidak ada
 -- egg lain yang lebih dekat ke part itu (anti salah-ambil).
-local function nearestCarryPrompt(egg)
+local function nearestCarryPrompt(egg, maxDist)
     local pos = egg.Pos
     if not pos then return nil end
-    local bestPrompt, bestPart, bestD = nil, nil, math.huge
+    -- batas jarak (pola asli): prompt terlalu jauh = melayani egg lain
+    local bestPrompt, bestPart, bestD = nil, nil, maxDist or 40
     for _, m in ipairs(workspace:GetChildren()) do
         if m.Name == "SmartPromptPart" then
             local pr = P(function() return m:FindFirstChild("CarryAreaEgg") end)
@@ -1905,6 +2036,20 @@ local function approachStep(egg)
 end
 
 -- ==== alur curi egg AREA (dunia utama, tanpa prompt di egg) ====
+-- Pola C[11] asli: jendela grab 1.5 dtk per ronde, tembak prompt tiap
+-- 0.06 dtk; prompt tidak ketemu -> fallback EggState.CarryFieldEgg(uid);
+-- 4 miss berturut-turut = ronde gagal.
+local function firePromptInstance(prompt)
+    if not prompt or not prompt.Parent then return false end
+    pcall(function() prompt.HoldDuration = 0 end)
+    if fireproximityprompt then
+        pcall(fireproximityprompt, prompt)
+    else
+        pcall(function() prompt:InputHoldBegin() prompt:InputHoldEnd() end)
+    end
+    return true
+end
+
 local function stealFieldEgg(egg)
     local step = approachStep(egg)
     local attempt = 0
@@ -1936,30 +2081,33 @@ local function stealFieldEgg(egg)
         if m and modelAlive and not pos then pos = modelPos(m) end
         if not pos then return "gone" end
 
-        local t = os.clock() + 4
+        -- jendela grab 1.5 dtk (pola asli), tembak tiap 0.06 dtk
+        local t = os.clock() + 1.5
+        local nextFire, misses = 0, 0
         while os.clock() < t and not isCarrying() do
             local root = Movement.Root()
             if not root then return "fail" end
-            local live = modelPos(m) or pos
+            local live = (m and modelAlive and modelPos(m)) or pos
             local d = (live - root.Position).Magnitude
             if d > 6 then
                 Movement.StepTo(live + Vector3.new(0, 2.5, 0), step)
-            else
+            elseif os.clock() >= nextFire then
+                nextFire = os.clock() + 0.06
                 local prompt = nearestCarryPrompt(egg)
                 if prompt then
-                    pcall(function() prompt.HoldDuration = 0 end)
-                    if fireproximityprompt then
-                        pcall(fireproximityprompt, prompt)
-                    else
-                        pcall(function()
-                            prompt:InputHoldBegin() prompt:InputHoldEnd()
-                        end)
-                    end
+                    firePromptInstance(prompt)
+                    misses = 0
+                else
+                    -- fallback asli: EggState.CarryFieldEgg(uid)
+                    misses = misses + 1
+                    if misses >= 4 then break end
+                    Repo.CarryFieldEgg(egg.Uid)
                 end
-                task.wait(0.3)
             end
             task.wait()
         end
+        if isCarrying() then return "ok" end
+        task.wait(0.15)
     end
     if isCarrying() then return "ok" end
     local m = egg.Model
@@ -1977,6 +2125,9 @@ local function stealPromptEgg(egg)
         if not model.Parent or not prompt or not prompt.Parent then
             return (model.Parent and "fail") or "gone"
         end
+        -- egg ter-weld ke pemain lain = sudah diambil (pola TakenWatch asli)
+        local carrier = weldCarrier(model)
+        if carrier and carrier ~= LocalPlayer.Character then return "taken" end
         local deadline = os.clock() + 3
         while os.clock() < deadline do
             local root = Movement.Root()
@@ -1986,7 +2137,7 @@ local function stealPromptEgg(egg)
             if not pos then break end
             local d = pos - root.Position
             if d.Magnitude < 5 then
-                fireStealPrompt(egg)
+                firePromptInstance(prompt)
                 if isCarrying() or not model.Parent then break end
                 task.wait(0.06)
             else
@@ -1997,7 +2148,7 @@ local function stealPromptEgg(egg)
         -- last push: tembak prompt beberapa kali
         local t = os.clock() + 1.2
         while os.clock() < t and not isCarrying() and model.Parent do
-            fireStealPrompt(egg)
+            firePromptInstance(prompt)
             task.wait(0.12)
         end
         if isCarrying() then break end
@@ -2119,15 +2270,13 @@ local function stealEggV3(egg)
             -- tembak prompt (pola asli: tiap 0.08 dtk)
             local prompt = egg.Prompt
             if not prompt or not prompt.Parent then
-                if egg.Kind == "Field" then prompt = nearestCarryPrompt(egg) end
+                if egg.Kind == "Field" then prompt = nearestCarryPrompt(egg, 40) end
             end
             if prompt then
-                pcall(function() prompt.HoldDuration = 0 end)
-                if fireproximityprompt then
-                    pcall(fireproximityprompt, prompt)
-                else
-                    pcall(function() prompt:InputHoldBegin() prompt:InputHoldEnd() end)
-                end
+                firePromptInstance(prompt)
+            elseif egg.Kind == "Field" then
+                -- V3Grab asli: spam fallback remote CarryFieldEgg tiap ronde
+                Repo.CarryFieldEgg(egg.Uid)
             end
             task.wait(0.08)
         end
@@ -2161,11 +2310,60 @@ local function stealSuccess(egg)
         tostring(egg.Name), tostring(egg.RarityLabel), fmtNum(egg.Value)), egg.RarityNum)
 end
 
+-- ==== WrongEgg (pola asli): entri filter untuk egg yang nyasar ke tangan ====
+local function heldEggEntry(heldUid)
+    local snap = Repo.FieldSnapshot(0.8)
+    if type(snap) ~= "table" or type(snap.Records) ~= "table" then return nil end
+    for _, rec in pairs(snap.Records) do
+        if type(rec) == "table" and tostring(rec.Uid or "") == heldUid then
+            local cat = tostring(rec.AssetCategory or "")
+            local name = cat
+            local spec = Repo.Spec(cat)
+            if type(spec) == "table" then
+                local dn = spec.DisplayName or spec._id
+                if dn and tostring(dn) ~= "" then name = tostring(dn) end
+            end
+            local label, num = Repo.RarityOf(cat)
+            local scale = tonumber(rec.AssetScale) or 1
+            local muts = type(rec.Mutations) == "table" and rec.Mutations or {}
+            return {
+                Uid = heldUid, Kind = "Field", Model = nil, Prompt = nil,
+                Name = name == "" and heldUid or name, Category = cat,
+                RarityLabel = label, RarityNum = num,
+                Scale = scale, Mutations = muts,
+                Value = Repo.EggValue(cat, scale, muts),
+                Pos = nil, Area = tostring(rec.AreaId or ""), Zone = nil,
+                State = rec.State, Key = "F:" .. heldUid,
+            }
+        end
+    end
+    return nil
+end
+
+-- lepas egg dari tangan (pola WrongEgg asli: DropFieldEgg + tunggu <= 1 dtk)
+local function dropCarriedEgg()
+    Repo.DropFieldEgg()
+    local hum = Movement.Humanoid()
+    if hum then pcall(function() hum:UnequipTools() end) end
+    local t = os.clock() + 1
+    while isCarrying() and os.clock() < t do
+        RunService.Heartbeat:Wait()
+    end
+    carryState.on = false
+    carryState.uid = nil
+end
+
 local function stealEgg(egg)
     local claimed = Movement.Claim("steal")
     if not claimed then
+        -- teks asli saat Auto Place memegang gerakan
+        Tasks.Status("steal", "Waiting for Auto Place")
         Steal.busy = false
         return
+    end
+    if Movement.ExitBeltIfAnchored() then
+        Tasks.Status("steal", "Getting off the treadmill first")
+        task.wait(0.2)
     end
     local res
     if Steal.v3 and v3ZoneOk(egg) then
@@ -2188,17 +2386,40 @@ local function stealEgg(egg)
         Movement.Release("steal")
         Steal.busy = false
     elseif res == "ok" and isCarrying() then
+        -- cek WrongEgg (pola asli): egg lain nyasar ke tangan?
+        local heldUid = carryingUid()
+        local wantUid = tostring(egg.Uid or "")
+        local wrong = heldUid ~= nil and wantUid ~= ""
+            and heldUid ~= wantUid and heldUid ~= "halloween"
+        if wrong then
+            local alt = heldEggEntry(heldUid)
+            if alt and stealFilterOk(alt) then
+                -- asli: "Holding another egg that still matches, delivering it"
+                Tasks.Status("steal", "Holding another egg that still matches, delivering it")
+                stealSuccess(alt)
+                deliverEgg(alt)
+                return
+            end
+            -- asli: "Wrong egg in hand, dropping it"
+            Tasks.Status("steal", "Wrong egg in hand, dropping it")
+            dropCarriedEgg()
+            Steal.bad[egg.Key] = os.clock() + 4
+            Movement.Release("steal")
+            Steal.busy = false
+            return
+        end
         stealSuccess(egg)
         deliverEgg(egg)
     elseif res == "gone" or res == "taken" then
         Steal.bad[egg.Key] = os.clock() + 8
-        Tasks.Status("steal", "Egg diambil pemain lain / sudah hilang, lanjut target berikutnya")
+        -- teks asli saat target diambil pemain lain
+        Tasks.Status("steal", "Someone took the target egg, picking another one")
         Movement.Release("steal")
         Steal.busy = false
     else
-        -- gagal: blacklist sebentar
+        -- gagal: blacklist sebentar (teks asli: "The egg never reached the hand")
         Steal.bad[egg.Key] = os.clock() + 20
-        Tasks.Status("steal", "Steal gagal, egg diblacklist 20s")
+        Tasks.Status("steal", "The egg never reached the hand — moving to another target")
         Movement.Release("steal")
         Steal.busy = false
     end
@@ -3328,6 +3549,8 @@ local function hwStealEgg(egg)
 end
 
 Tasks.Add("halloween", 1.0, function()
+    -- watchdog carry (p3) ikut hidup selama task Halloween aktif
+    Steal.carryWatch = Hw.steal == true
     if not Hw.steal then return end
     if Movement.Owner == "hwsteal" then return end
     if Steal.busy then return end -- Auto Steal utama sedang berjalan

@@ -14,8 +14,8 @@ Fitur inti script ini. Karakter kamu akan otomatis berjalan/tween ke egg yang lo
 
 | Pengaturan | Penjelasan |
 |------------|-----------|
-| **Auto Steal** | Mengaktifkan pencurian otomatis — membaca daftar egg area dari snapshot server (`RF/EggWorld/AskFieldEggSnapshot`), lalu terbang ke egg dan menembak prompt `SmartPromptPart.CarryAreaEgg` terdekat, seperti script asli |
-| **Steal Panel** | Panel melayang tambahan: daftar semua item yang bisa dicuri (egg area dari snapshot server + egg event Halloween + egg di base pemain lain) dengan nama/area/rarity/nilai/jarak/pemilik; klik baris = kunci item jadi target prioritas, tombol Steal = curi langsung; otomatis terbuka saat Auto Steal ON (versi ThorHub) |
+| **Auto Steal** | Mengaktifkan pencurian otomatis — membaca daftar egg area dari snapshot server (`RF/EggWorld/AskFieldEggSnapshot`), lalu terbang ke egg dan menembak prompt `SmartPromptPart.CarryAreaEgg` terdekat, seperti script asli. Bila prompt tak ketemu: fallback curi `EggState.CarryFieldEgg` (modul game, pola asli). Deteksi "sedang membawa" pakai weld model GUID-32 + record server *Carried* + atribut Halloween dengan watchdog 0,2 dtk & histeresis 0,8 dtk (pola HeldByMe/GuessedDrop asli) — **bukan** tool biasa. Salah ambil egg → drop & ulangi (WrongEgg asli); egg nyasar yang tetap lolos filter tetap diantar. Sebelum curi/antar: otomatis turun dari treadmill bila root ter-anchor |
+| **Steal Panel** | Panel melayang tambahan: daftar semua item yang bisa dicuri (egg area dari snapshot server + egg event Halloween + egg di base pemain lain) dengan nama/area/rarity/nilai/jarak/pemilik; klik baris = kunci item jadi target prioritas, tombol Steal = curi langsung (egg base pemain lain hanya lewat tombol ini — mode AUTO persis asli: hanya egg area + Halloween); otomatis terbuka saat Auto Steal ON (versi ThorHub) |
 | **Target Areas** | Pilih zona mana saja yang di-scan (misal hanya zona tertentu) |
 | **Min Rarity** | Rarity minimal egg yang mau dicuri — pasang `Eternal`/`Divine` biar cuma kejar egg langka |
 | **Min Steal Value** | Nilai jual minimal egg yang mau dicuri (angka, satuannya per detik /s) |
