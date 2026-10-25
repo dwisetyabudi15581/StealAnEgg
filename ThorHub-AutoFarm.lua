@@ -1,17 +1,31 @@
 --[[════════════════════════════════════════════════════════════════════════════
-  ⚡ THORHUB — AUTO FARM (Steal an Egg)
-  Edisi khusus AUTO FARM: hanya mesin farming + UI floating (ThorUi ⚡).
-  v2.0 — BERBASIS KODE BARU Chilli (SAE v172610): + Auto Hop (Egg Finder),
-  + Auto Progression, + mutasi baru (Scrambled/Bloom/Spirit Bloom/Fractured/
-  Enchanted/Parasite/Nitro/Spectral). ThorUi embedded + boot shield + guard.
-  Semua fitur diimplementasi ulang secara native (tanpa kode obfuscate).
-  Tanpa promosi apa pun: tidak ada link Discord pihak ketiga, tidak ada
-  bootstrap pihak ketiga, tidak ada teks "Chilli/Venyx".
+  ⚡ THORHUB — STEAL AN EGG (rewrite basis KODE BARU Chilli Hub)
+  v3.0 — SAMAIN PERSIS dengan kode baru StealAnEggg (SAE v172610):
+  struktur menu 1:1 dengan script baru (8 tab), metode engine baru, dan
+  Steal Panel model baru (hijack HUD game: tombol Pets + frame ActivePets).
 
-  Fitur (semua di tab FARM):
-    Auto Steal (V1/V2/V3 Instant) · Shooting Star · Butterfly Bloom ·
-    Wisp & Banjo · Auto Mutation · Auto Place Egg · Auto Treadmill ·
-    Auto Hatch & Equip · Auto Sell (Pet/Egg) · Auto Fuse · Auto Favorite
+  Menu (persis kode baru):
+    FARM        : Auto Steal (Delivery: Tween/Instant Steps/Fast Tween) ·
+                  Auto Progression · Auto Mutation · Auto Place Egg ·
+                  Auto Treadmill · Auto Hatch & Equip · Auto Sell ·
+                  Auto Fuse Machine · Auto Favorite · Priority Rotation · Priority
+    EVENT       : Pumpkin Boss · Halloween Dimension · Halloween Monsters ·
+                  Ghost Dog & Fishing · Phantom Express · Shooting Star ·
+                  Butterfly Bloom (+ Wisp & Banjo) · The Hollow
+    ADMIN ABUSE : Capture The Egg · Admin Treadmill · Instant Steal V3 ·
+                  Minigame Eggs · Cursed Island Wars
+    PLAYER      : ESP · Movement · Character · Combat
+    PREDICTOR   : Discord Webhook · Egg Predictor · Fuse Predictor
+    SERVER      : Server (hop/rejoin/auto load)
+    MISC        : Performance · Utility · Farm HUD
+    AUTO HOP    : Egg Finder (sync filter dengan Auto Steal)
+
+  Steal Panel (metode baru — hijack HUD game):
+    tombol toggle = kloning tombol Pets game (menempel di kolom tombol kanan),
+    panel = kloning frame ActivePets game: judul "Steal Panel", tombol Sort
+    (siklus Steal Priority), baris tombol Steal/Halloween/filter, daftar kartu
+    egg (rank, icon, nama, value, detail) dengan ★ prioritas, ▲▼ urutan,
+    X batal. Slide animasi + ingat status terbuka.
 
   UI:
     - Library  : ThorUi v2 (github.com/dwisetyabudi15581/ThorUi) — branding ThorHub
@@ -35,9 +49,9 @@ if Gill.__THORHUB_AF_LOADED then
     if type(old) == "function" then pcall(old) end
 end
 
--- v2.0: log bootstrap — memudahkan verifikasi versi yang berjalan
+-- v3.0: log bootstrap — memudahkan verifikasi versi yang berjalan
 if type(print) == "function" then
-    print("[ThorHub] Auto Farm v2.0 dimuat (basis kode baru SAE v172610 - self-contained)")
+    print("[ThorHub] v3.0 dimuat (rewrite basis kode baru StealAnEggg — menu 8 tab + Steal Panel hijack HUD)")
 end
 
 local Services = {}
@@ -1757,17 +1771,20 @@ local Steal = {
     -- lock = Key entry pilihan manual dari Steal Panel (string, stabil
     -- lintas pembaruan cache; di-resolve ulang tiap pick)
     lock = nil,
-    missingIndex = false, dropSafe = false, priority = "Best Rarity",
-    tweenSpeed = 100, carrySpeed = 100, instant = false, v2 = false, v3 = false,
-    -- keluarga metode Instant Steal (pola SafeCarry asli):
-    -- V1 "Instant Steal"  : antar steps + titik lepas tengah (LineDrop)
-    -- V1 "Fast Delivery" : antar pakai fast tween (sama jalur dgn V2)
-    -- V2 "Instant Steal V2": fast tween 3000-4500 studs/s, zona terbatas
-    -- V3 "Teleport To Egg": rantai teleport — ke egg, grab, lalu ke Star
-    --                        Handler / belt Admin Treadmill (belt mengantar)
-    instantSteps = 3, fastDelivery = false,
-    v2Approach = "Teleport", v2Speed = 3300,
-    v2Zones = { ["Titan Temple"] = true, ["Light Dark"] = true, ["Enchanted Forest"] = true },
+    -- pick queue ala kode baru (m[15].pick): daftar Key terurut — panel
+    -- Steal menambah/memindah/membatal; antrean pertama menang saat target
+    pick = {},
+    missingIndex = false, dropSafe = false,
+    priority = "Highest Value", -- "Steal first" kode baru (default Best value)
+    -- Delivery kode baru: {"Tween","Instant Steps","Fast Tween"} (default Tween)
+    delivery = "Tween",
+    carryK = 1.0,       -- "Delivery Speed" 80-110% (carryK = v/100)
+    instantSteps = 3,   -- "Step Count" 1-6 (mode Instant Steps)
+    pullSpeed = 3300,   -- "Fast Tween Speed" 3000-4500 studs/s (mode Fast Tween)
+    adminSteal = false, -- "Use Instant Steal V3" (Admin Abuse; butuh Admin Treadmill)
+    v3 = false,         -- kompatibilitas internal (diset = adminSteal oleh menu)
+    hwInstant = true,   -- "Instant Steal Halloween Eggs" (HWX, default ON)
+    agPanel = true,     -- "Anti Guard Panel" (default ON ala kode baru)
     busy = false, bad = {}, stolen = 0, best = nil, bestRank = -1,
     history = {}, lastDeliver = 0, hwDelivered = 0,
     -- pola SafeCarry.Blocked asli: uid egg yang pernah direbut guard saat
@@ -1782,7 +1799,7 @@ local function horizDist(a, b)
     return math.sqrt(dx * dx + dz * dz)
 end
 
--- ==== zona metode instant (peta zona asli) ====
+-- zona metode instant (peta zona asli) — dipakai jalur V3 (Admin Treadmill)
 local V3_ZONES = {
     ["Prehistoric"] = true, ["Cosmic"] = true, ["Cherry Blossom"] = true,
     ["Titan Temple"] = true, ["Light Dark"] = true, ["Enchanted Forest"] = true,
@@ -1794,24 +1811,21 @@ local function zoneKey(egg)
     return z
 end
 
-local function v2ZoneOk(egg)
-    local z = zoneKey(egg)
-    if z == "" then return false end
-    return Steal.v2Zones[z] == true
-end
-
 local function v3ZoneOk(egg)
     return V3_ZONES[zoneKey(egg)] == true
 end
 
--- mode antar egg (pola DeliveryMode asli; V3 punya jalur sendiri).
--- Prioritas: V2 (zona lolos) > V1 Fast Delivery (Pull) > V1 Steps > Normal.
+-- mode antar egg — PERSIS kode baru: dropdown "Delivery"
+--   "Tween"         -> Normal (carry tween biasa, kecepatan carryK)
+--   "Instant Steps" -> Steps (antar per-steps + titik lepas tengah)
+--   "Fast Tween"    -> Pull (fast tween 3000-4500 studs/s)
+-- V3 (Use Instant Steal V3, Admin Abuse) punya jalur sendiri.
 local function deliveryMode(egg)
-    if Steal.v2 and v2ZoneOk(egg) then return "Pull" end
-    if Steal.instant then
-        if Steal.fastDelivery then return "Pull" end
-        return "Steps"
+    if Steal.delivery == "Fast Tween"
+        or (egg.Kind == "Halloween" and Steal.hwInstant) then
+        return "Pull"
     end
+    if Steal.delivery == "Instant Steps" then return "Steps" end
     return "Normal"
 end
 
@@ -1864,6 +1878,11 @@ local function stealAreaOk(egg)
 end
 
 local function stealFilterOk(egg)
+    -- hook filter egg Halloween (HWX — kode baru: Auto Steal Halloween Eggs)
+    if egg.Kind == "Halloween" and Steal.hwFilterHook then
+        local ok = Steal.hwFilterHook(egg)
+        if ok == false then return false end
+    end
     if not stealAreaOk(egg) then return false end
     -- "Target Specific Eggs" memakai kategori aset (kunci Directory),
     -- persis opsi menu; fallback ke nama tampilan
@@ -1887,13 +1906,19 @@ end
 
 local function pickStealTarget()
     local targets = EggState.StealTargets()
-    -- target pilihan manual dari Steal Panel selalu menang (tanpa filter);
-    -- lock berupa Key, di-resolve ke entri terbaru supaya posisi live
-    if Steal.lock then
+    -- PICK QUEUE kode baru: antrean panel Steal menang (tanpa filter);
+    -- Key di-resolve ke entri terbaru supaya posisi live
+    local queue = {}
+    for _, key in ipairs(Steal.pick) do queue[#queue + 1] = key end
+    if Steal.lock then queue[#queue + 1] = Steal.lock end
+    for _, key in ipairs(queue) do
         for _, egg in ipairs(targets) do
-            if egg.Key == Steal.lock then return egg end
+            if egg.Key == key then return egg end
         end
-        Steal.lock = nil
+        -- Key antrean tidak valid lagi -> buang
+        local idx = table.find(Steal.pick, key)
+        if idx then table.remove(Steal.pick, idx) end
+        if Steal.lock == key then Steal.lock = nil end
     end
     local best, bestScore = nil, -math.huge
     local now = os.clock()
@@ -2025,7 +2050,7 @@ local function deliverEgg(egg)
                 local mz = math.max(sz.Size.Z / 2 - 6, 0)
                 local goal = sz.CFrame:PointToWorldSpace(Vector3.new(
                     math.clamp(rel.X, -mx, mx), 0, math.clamp(rel.Z, -mz, mz)))
-                Movement.CarryTo(goal, function() return not isCarrying() end, 60, Steal.carrySpeed / 100)
+                Movement.CarryTo(goal, function() return not isCarrying() end, 60, Steal.carryK)
             end
             Repo.Invoke("RF/HalloweenDimension/AskDropEgg")
             task.wait(0.6)
@@ -2072,16 +2097,16 @@ local function deliverEgg(egg)
     end
 
     if mode == "Pull" then
-        -- fast tween 3000-4500 studs/s (Instant Steal V2 / Fast Delivery)
+        -- fast tween 3000-4500 studs/s (kode baru: Delivery "Fast Tween")
         Movement.CarryTo(target, function()
             return not isCarrying()
-        end, 12, nil, Steal.v2Speed)
+        end, 12, nil, Steal.pullSpeed)
     elseif mode == "Steps" then
         deliverSteps(target)
     else
         Movement.CarryTo(target, function()
             return not isCarrying()
-        end, 45, Steal.carrySpeed / 100)
+        end, 45, Steal.carryK)
     end
 
     -- beri kesempatan server redeem. Konfirmasi utama: RE verdict
@@ -2203,14 +2228,14 @@ local function nearestCarryPrompt(egg, maxDist)
 end
 
 -- ==== langkah pendekatan menuju egg ====
--- "Move To Egg" Instant Steal V2 (pola asli): Teleport = lompatan penuh
--- satu frame; Step = rantai langkah kecil (dipakai juga V1/Normal).
+-- kode baru: Delivery "Fast Tween" = lompatan penuh satu frame;
+-- "Instant Steps" = langkah besar 60; "Tween" = carryK * 40.
 local function approachStep(egg)
-    if Steal.v2 and Steal.v2Approach == "Teleport" and v2ZoneOk(egg) then
+    if Steal.delivery == "Fast Tween" then
         return math.huge -- teleport penuh satu frame
     end
-    if Steal.instant then return 60 end
-    return Steal.tweenSpeed / 100 * 40
+    if Steal.delivery == "Instant Steps" then return 60 end
+    return Steal.carryK * 40
 end
 
 -- ==== alur curi egg AREA (dunia utama, tanpa prompt di egg) ====
@@ -2591,8 +2616,8 @@ local function stealEgg(egg)
     -- tunggu sampai dia tidur (max 3 dtk) supaya tidak tertangkap basah.
     waitGuardSleep(egg)
     local res
-    if Steal.v3 and v3ZoneOk(egg) then
-        -- Instant Steal V3: rantai teleport + belt/Star Handler (pola asli)
+    if Steal.adminSteal and v3ZoneOk(egg) then
+        -- Instant Steal V3 (kode baru: Use Instant Steal V3 + Admin Treadmill)
         res = stealEggV3(egg)
     else
         Tasks.Status("steal", "FLY TO EGG  |  " .. tostring(egg.Name))
@@ -2604,6 +2629,10 @@ local function stealEgg(egg)
     end
 
     if Steal.lock and Steal.lock == egg.Key then Steal.lock = nil end
+    do
+        local idx = table.find(Steal.pick, egg.Key)
+        if idx then table.remove(Steal.pick, idx) end
+    end
     if res == "delivered" then
         -- V3 selesai total: egg sudah diantar belt / Star Handler
         stealSuccess(egg)
@@ -2681,7 +2710,7 @@ Repo.Connect("RE/EggWorld/FieldEggRedeemVerdict", function(data)
     if type(data) == "table" then
         local name = tostring(data.AssetCategory or data.DisplayName or "Egg")
         local _, num = Repo.RarityOf(name)
-        Webhook.Post("Egg Delivered", "**" .. name .. "** tiba di base", num)
+        Webhook.Post("Egg Delivered", "**" .. name .. "** tiba di base", num, name)
     end
 end)
 
@@ -3118,9 +3147,11 @@ local function httpPost(url, body)
 end
 
 -- Webhook.Post(event, message, rarityNum)
-function Webhook.Post(event, message, rarityNum)
+function Webhook.Post(event, message, rarityNum, eggName)
     if Webhook.url == "" then return end
     if not Webhook.events[event] then return end
+    if eggName and next(Webhook.specific or {}) ~= nil
+        and not Webhook.specific[eggName] then return end
     if (tonumber(rarityNum) or 0) > 0 and Webhook.minRarity > 0 and rarityNum < Webhook.minRarity then return end
     local content = message
     if Webhook.everyone then content = "@everyone " .. message end
@@ -3350,36 +3381,1528 @@ Repo.Connect("RE/BanjoCricket/Aim", function(data)
         end)
     end
 end)
---════════════ BAGIAN 5 — STEAL PANEL ════════════
---────────────────────────────[ STEAL PANEL ]────────────────────────────
--- UI tambahan ala script asli: panel melayang kecil yang menampilkan
--- semua item yang bisa dicuri (egg lapangan + egg di base pemain lain),
--- memilih item target untuk Auto Steal (prioritas, tanpa filter), dan
--- tombol "Steal" per baris untuk mencuri langsung. Posisi & status
--- terbuka tersimpan (config + getgenv), panel bisa dikecilkan, dan
--- drag-nya ramah mouse maupun layar sentuh.
 
-local StealPanel = {
-    gui = nil, root = nil, list = nil, rows = {}, body = {}, conns = {},
-    open = false, collapsed = false, autoOpen = true, built = false,
-    sort = "Best Rarity",
-    SORTS = { "Best Rarity", "Highest Value", "Biggest Weight", "Nearest" },
-    sig = "", selected = nil,
-    lblAuto = nil, lblHw = nil, lblEggs = nil, lblSort = nil,
-    lblNight = nil, lblSel = nil,
+--════════════ BAGIAN 4b — ENGINE PLAYER & MISC (kode baru) ════════════
+-- Dipetakan 1:1 dari modul kode baru: 41_move (Speed Boost/Boost Speed/
+-- Infinite Jump/Invisibility/Anti Ragdoll/Anti Trap/Instant Prompts),
+-- 40_esp (ESP lengkap), 42_combat (Auto Hit), 50_system#3 (Performance),
+-- Anti AFK (Utility).
+
+--────────────────────────────[ MOVEMENT: SPEED & JUMP ]────────────────────────────
+
+local MoveX = {
+    speed = false,   -- "Speed Boost"
+    boost = 350,     -- "Boost Speed" 20-1000 studs/s (default 350 ala kode baru)
+    infJump = false, -- "Infinite Jump"
+    baseWalk = nil,
 }
 
--- palet & font persis ThorUi, biar satu keluarga dengan menu utama
-local SP_BG     = Color3.fromRGB(11, 14, 23)
-local SP_CARD   = Color3.fromRGB(21, 26, 41)
-local SP_CARDH  = Color3.fromRGB(28, 36, 56)
-local SP_ACCENT = Color3.fromRGB(0, 195, 255)
-local SP_GOLD   = Color3.fromRGB(255, 190, 0)
-local SP_TEXT   = Color3.fromRGB(240, 244, 255)
-local SP_DIM    = Color3.fromRGB(145, 155, 180)
-local SP_STROKE = Color3.fromRGB(45, 58, 88)
-local SP_DARK   = Color3.fromRGB(30, 24, 0)
+Tasks.Add("movespeed", 0.5, function()
+    if not MoveX.speed then
+        -- pulihkan kecepatan dasar game sekali saat mati
+        if MoveX.baseWalk then
+            local hum = Movement.Humanoid()
+            if hum and hum.WalkSpeed ~= MoveX.baseWalk then
+                P(function() hum.WalkSpeed = MoveX.baseWalk end)
+            end
+        end
+        return
+    end
+    local hum = Movement.Humanoid()
+    if not hum then return end
+    if not MoveX.baseWalk then
+        MoveX.baseWalk = tonumber(P(function() return hum.WalkSpeed end)) or 16
+    end
+    P(function() hum.WalkSpeed = MoveX.boost end)
+end)
 
+do
+    -- Infinite Jump (pola asli: JumpRequest -> ChangeState Jumping)
+    local jumpConn = nil
+    local function setInfJump(on)
+        if jumpConn then P(function() jumpConn:Disconnect() end) jumpConn = nil end
+        if not on then return end
+        jumpConn = P(function()
+            return UserInputService.JumpRequest:Connect(function()
+                local hum = Movement.Humanoid()
+                if hum then P(function() hum:ChangeState(Enum.HumanoidStateType.Jumping) end) end
+            end)
+        end)
+    end
+    MoveX.SetInfJump = setInfJump
+end
+
+--────────────────────────────[ CHARACTER: ANTI RAGDOLL / TRAP / PROMPT ]────────────────────────────
+
+local CharX = {
+    invis = false,    -- "Invisibility" (pakai Character.ApplyInvisibility)
+    antiRag = false,  -- "Anti Ragdoll"
+    antiTrap = false, -- "Anti Trap"
+    prompts = false,  -- "Instant Prompts"
+}
+
+Tasks.Add("charx", 0.5, function()
+    if CharX.antiRag and Movement.IsRagged() then
+        Character.AntiRagdollOnce()
+        Tasks.Status("charx", "Anti Ragdoll  |  recovering")
+    end
+    if CharX.antiTrap then
+        local root = Movement.Root()
+        if root then
+            local pos = root.Position
+            for _, inst in ipairs(Scan.Workspace()) do
+                if inst:IsA("BasePart") then
+                    local n = string.lower(inst.Name or "")
+                    if (string.find(n, "trap", 1, true) or string.find(n, "snare", 1, true))
+                        and not inst.CanCollide == nil then
+                        local rel = P(function() return (inst.Position - pos).Magnitude end)
+                        if rel and rel < 12 then
+                            P(function()
+                                root.CFrame = root.CFrame + Vector3.new(0, 8, 0)
+                            end)
+                            Tasks.Status("charx", "Anti Trap  |  escaped")
+                            break
+                        end
+                    end
+                end
+            end
+        end
+    end
+end)
+
+do
+    -- Instant Prompts: HoldDuration = 0 untuk semua ProximityPrompt (pola asli)
+    local lastPrompt = 0
+    Tasks.Add("prompts", 1.5, function()
+        if not CharX.prompts then return end
+        if os.clock() - lastPrompt < 2 then return end
+        lastPrompt = os.clock()
+        for _, inst in ipairs(Scan.Workspace()) do
+            if inst:IsA("ProximityPrompt") and inst.HoldDuration > 0 then
+                P(function() inst.HoldDuration = 0 end)
+            end
+        end
+    end)
+end
+
+--────────────────────────────[ ESP (modul 40_esp kode baru) ]────────────────────────────
+
+local ESP = {
+    eggs = false,       -- "ESP Eggs" (egg lapangan)
+    fixed = false,      -- "ESP Fixed Size"
+    own = false,        -- "ESP Own Base Eggs"
+    others = false,     -- "ESP Other Base Eggs"
+    minRarity = 0,      -- "ESP Min Rarity"
+    minValue = 0,       -- "Min ESP Value"
+    info = {},          -- "ESP Show Info" multi {Name,Rarity,Value,Mutations,Distance}
+    eggSize = 0.75,     -- "ESP Egg Size" 50-200% (default 75)
+    guards = false,     -- "ESP Guards"
+    guardSize = 0.75,   -- "ESP Guard Size"
+    players = false,    -- "ESP Players"
+    playerInfo = { Name = true, Tool = true }, -- "ESP Player Info" {Name,Username,Avatar,Tool}
+    playerSize = 0.75,  -- "ESP Player Size" 50-200%
+    invValues = false,  -- "Inventory Values"
+    tags = {},          -- [instance] = BillboardGui
+}
+
+local ESP_RARITY_COLOR = {
+    [1] = Color3.fromRGB(196, 200, 210), [2] = Color3.fromRGB(94, 219, 132),
+    [3] = Color3.fromRGB(86, 156, 255), [4] = Color3.fromRGB(178, 102, 255),
+    [5] = Color3.fromRGB(255, 173, 51), [6] = Color3.fromRGB(255, 84, 112),
+    [7] = Color3.fromRGB(88, 116, 255), [8] = Color3.fromRGB(255, 214, 64),
+    [9] = Color3.fromRGB(120, 240, 220), [10] = Color3.fromRGB(255, 240, 130),
+}
+
+local function espTextForEgg(egg, isOther)
+    local parts = {}
+    if ESP.info.Name ~= false then parts[#parts + 1] = tostring(egg.Name) end
+    if ESP.info.Rarity then
+        parts[#parts + 1] = "[" .. tostring(egg.RarityLabel or "?") .. "]"
+    end
+    if ESP.info.Value then
+        parts[#parts + 1] = "$" .. fmtNum(egg.Value or 0) .. "/s"
+    end
+    if ESP.info.Mutations and type(egg.Mutations) == "table" and #egg.Mutations > 0 then
+        parts[#parts + 1] = table.concat(egg.Mutations, " ")
+    end
+    if isOther then parts[#parts + 1] = "@" .. tostring(egg.OwnerName or "?") end
+    if ESP.info.Distance and egg.Pos and Movement.Pos() then
+        parts[#parts + 1] = tostring(math.floor((egg.Pos - Movement.Pos()).Magnitude + 0.5)) .. "m"
+    end
+    if #parts == 0 then parts[1] = tostring(egg.Name or "?") end
+    return table.concat(parts, "  ")
+end
+
+local function espAttach(inst, text, color, scale, group)
+    if not inst or ESP.tags[inst] then return end
+    local bb = Instance.new("BillboardGui")
+    bb.Name = "ThorESP"
+    bb.AlwaysOnTop = true
+    bb.Adornee = inst
+    bb.Size = UDim2.new(0, 220, 0, 34)
+    bb.StudsOffset = Vector3.new(0, 4, 0)
+    bb.StudsOffsetWorldSpace = ESP.fixed and Vector3.new(0, 30, 0) or Vector3.new(0, 4, 0)
+    bb.MaxDistance = 2000
+    local lbl = Instance.new("TextLabel")
+    lbl.BackgroundTransparency = 1
+    lbl.Size = UDim2.new(1, 0, 1, 0)
+    lbl.Font = Enum.Font.GothamBold
+    lbl.TextSize = math.floor(14 * scale + 0.5)
+    lbl.TextColor3 = color or Color3.fromRGB(255, 255, 255)
+    lbl.TextStrokeTransparency = 0.3
+    lbl.Text = text
+    lbl.Parent = bb
+    bb.Parent = inst
+    ESP.tags[inst] = { gui = bb, label = lbl, group = group }
+end
+
+local function espDrop(inst)
+    local t = ESP.tags[inst]
+    if t then P(function() t.gui:Destroy() end) ESP.tags[inst] = nil end
+end
+
+local function espColor(egg)
+    return ESP_RARITY_COLOR[egg.RarityNum or 0] or Color3.fromRGB(255, 255, 255)
+end
+
+Tasks.Add("esp", 1.0, function()
+    local any = ESP.eggs or ESP.own or ESP.others or ESP.guards or ESP.players
+    if not any then
+        for inst in pairs(ESP.tags) do espDrop(inst) end
+        return
+    end
+    -- buang tag grup yang dimatikan / instance mati
+    for inst, t in pairs(ESP.tags) do
+        local gone = not inst.Parent or (t.group == "eggs" and not ESP.eggs)
+            or (t.group == "own" and not ESP.own)
+            or (t.group == "others" and not ESP.others)
+            or (t.group == "guards" and not ESP.guards)
+            or (t.group == "players" and not ESP.players)
+        if gone then espDrop(inst) end
+    end
+    local seen = {}
+    -- ESP Eggs (field + halloween)
+    if ESP.eggs then
+        for _, egg in ipairs(EggState.StealTargets()) do
+            local inst = egg.Model or egg.RenderRoot
+            if inst and inst.Parent and egg.Kind ~= "Base" then
+                local pass = (egg.RarityNum or 0) >= ESP.minRarity
+                    and (ESP.minValue <= 0 or (egg.Value or 0) >= ESP.minValue)
+                if pass then
+                    seen[inst] = true
+                    local txt = espTextForEgg(egg, false)
+                    local t = ESP.tags[inst]
+                    if t then
+                        P(function() t.label.Text = txt end)
+                    else
+                        espAttach(inst, txt, espColor(egg), ESP.eggSize, "eggs")
+                    end
+                end
+            end
+        end
+    end
+    -- ESP base eggs (sendiri / pemain lain) via PlacedEggRenders
+    local renders = Repo.PlacedEggRenders()
+    if renders then
+        local myUid = tostring(LocalPlayer.UserId)
+        for _, m in ipairs(renders:GetChildren()) do
+            local isMine = string.find(m.Name, myUid, 1, true) ~= nil
+            local group = isMine and "own" or "others"
+            if ESP[group] and not seen[m] then
+                local cat = P(function() return m:GetAttribute("AssetCategory")
+                    or m:GetAttribute("Category") end)
+                local label, num = Repo.RarityOf(cat or "")
+                local scale = tonumber(P(function() return m:GetAttribute("Scale") end)) or 1
+                local val = Repo.EggValue(cat or "", scale, {}) or 0
+                local pass = num >= ESP.minRarity
+                    and (ESP.minValue <= 0 or val >= ESP.minValue)
+                if pass then
+                    seen[m] = true
+                    local egg = { Name = cat or m.Name, RarityLabel = label,
+                        RarityNum = num, Value = val, Mutations = {}, Pos = nil }
+                    local t = ESP.tags[m]
+                    local txt = espTextForEgg(egg, not isMine)
+                    if t then
+                        P(function() t.label.Text = txt end)
+                    else
+                        espAttach(m, txt, espColor(egg), ESP.eggSize, group)
+                    end
+                end
+            end
+        end
+    end
+    -- ESP Guards (model guard di GuardAreas / workspace)
+    if ESP.guards then
+        local ga = Repo.GuardAreas()
+        if ga then
+            for _, g in ipairs(ga:GetChildren()) do
+                local base = g:IsA("Model") and (g:FindFirstChild("HumanoidRootPart") or g:FindFirstChildWhichIsA("BasePart")) or g
+                if base and base:IsA("BasePart") then
+                    seen[base] = true
+                    local txt = "GUARD  " .. tostring(g.Name)
+                    local t = ESP.tags[base]
+                    if t then
+                        P(function() t.label.Text = txt end)
+                    else
+                        espAttach(base, txt, Color3.fromRGB(255, 92, 92), ESP.guardSize, "guards")
+                    end
+                end
+            end
+        end
+    end
+    -- ESP Players
+    if ESP.players then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local root = P(function() return plr.Character
+                    and plr.Character:FindFirstChild("HumanoidRootPart") end)
+                if root and root.Parent then
+                    seen[root] = true
+                    local parts = {}
+                    if ESP.playerInfo.Name then parts[#parts + 1] = tostring(plr.DisplayName) end
+                    if ESP.playerInfo.Username then parts[#parts + 1] = "@" .. tostring(plr.Name) end
+                    if ESP.playerInfo.Tool then
+                        local tool = P(function()
+                            local ch = plr.Character
+                            return ch and ch:FindFirstChildOfClass("Tool")
+                        end)
+                        if tool then parts[#parts + 1] = tostring(tool.Name) end
+                    end
+                    if ESP.info.Distance and Movement.Pos() then
+                        local pp = P(function() return root.Position end)
+                        if pp then
+                            parts[#parts + 1] = tostring(math.floor((pp - Movement.Pos()).Magnitude + 0.5)) .. "m"
+                        end
+                    end
+                    local txt = #parts > 0 and table.concat(parts, "  ") or tostring(plr.Name)
+                    local t = ESP.tags[root]
+                    if t then
+                        P(function() t.label.Text = txt end)
+                    else
+                        espAttach(root, txt, Color3.fromRGB(120, 220, 255), ESP.playerSize, "players")
+                    end
+                end
+            end
+        end
+    end
+end)
+
+--────────────────────────────[ COMBAT (modul 42_combat kode baru) ]────────────────────────────
+
+local Combat = {
+    mode = "Auto Hit Nearest Player", -- radio: Nearest / Egg Holders / Specific
+    target = nil,     -- "Hit Player" (nama pemain spesifik)
+    aura = false,     -- "Hit Aura"
+    chase = 400,      -- "Hit Tween Speed" 100-1000 (default 400)
+    maxSpeed = 750,   -- "Hit Max Speed" 100-1000 (default 750)
+    lead = -275,      -- "Hit Lead" -400..100 (default -275)
+    sweep = 60,       -- "Hit Sweep" 0-250% (default 60)
+    weapons = {},     -- "Swap Weapons" (maks 2; kosong = best bat)
+    swapT = 0.3,      -- "Weapon 1 Hold" 0.2-1.5s
+    swapT2 = 0.4,     -- "Weapon 2 Hold" 0.2-1.5s
+    lastTarget = nil,
+}
+
+local function combatToolOf(plr)
+    -- senjata = Tool dengan atribut bat/slap (pola BatControllerData asli)
+    local ch = plr.Character
+    if not ch then return nil end
+    local tool = ch:FindFirstChildOfClass("Tool")
+    if tool then
+        local ok = P(function()
+            return tool:GetAttribute("ItemType") == "Weapon"
+                or tool:GetAttribute("BatControllerData") ~= nil
+        end)
+        if ok then return tool end
+    end
+    return nil
+end
+
+local function combatEquipWeapon(slot)
+    -- pasang senjata dari daftar Swap Weapons / best bat (pola asli)
+    local bp = LocalPlayer:FindFirstChildOfClass("Backpack")
+    if not bp then return false end
+    local wanted = {}
+    for i = 1, 2 do
+        local w = Combat.weapons[i]
+        if w and w ~= "" then wanted[#wanted + 1] = w end
+    end
+    local best, bestName = nil, nil
+    for _, t in ipairs(bp:GetChildren()) do
+        if t:IsA("Tool") then
+            local isW = P(function()
+                return t:GetAttribute("ItemType") == "Weapon"
+                    or t:GetAttribute("BatControllerData") ~= nil
+                    or t:GetAttribute("ToolController") == "Slap"
+            end)
+            if isW then
+                if table.find(wanted, t.Name) then
+                    best, bestName = t, t.Name
+                    break
+                end
+                if not best then best, bestName = t, t.Name end
+            end
+        end
+    end
+    if best then
+        local hum = Movement.Humanoid()
+        if hum then
+            P(function() hum:EquipTool(best) end)
+            return true, bestName
+        end
+    end
+    return false, nil
+end
+
+local function combatFindTarget()
+    local mode = Combat.mode
+    if mode == "Auto Hit Specific Player" and Combat.target and Combat.target ~= "" then
+        local plr = Players:FindFirstChild(Combat.target)
+        if plr then
+            local root = P(function() return plr.Character
+                and plr.Character:FindFirstChild("HumanoidRootPart") end)
+            if root then return plr, root end
+        end
+        return nil, nil
+    end
+    local best, bestD = nil, math.huge
+    local myPos = Movement.Pos()
+    if not myPos then return nil, nil end
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local root = P(function() return plr.Character
+                and plr.Character:FindFirstChild("HumanoidRootPart") end)
+            if root then
+                local pos = P(function() return root.Position end)
+                if pos then
+                    local d = (pos - myPos).Magnitude
+                    local hit = false
+                    if mode == "Auto Hit Egg Holders" then
+                        -- pemain yang sedang membawa egg (Tool egg di karakter)
+                        local carrying = P(function()
+                            local ch = plr.Character
+                            local tool = ch and ch:FindFirstChildOfClass("Tool")
+                            return tool and (tool:GetAttribute("EggUid") ~= nil
+                                or tool:GetAttribute("UID") ~= nil
+                                or string.find(tool.Name, "Egg", 1, true) ~= nil)
+                        end)
+                        hit = carrying == true
+                    else
+                        hit = true
+                    end
+                    if hit and d < bestD then best, bestD = plr, d end
+                end
+            end
+        end
+    end
+    if best then
+        local root = P(function() return best.Character
+            and best.Character:FindFirstChild("HumanoidRootPart") end)
+        return best, root
+    end
+    return nil, nil
+end
+
+Tasks.Add("combat", 0.25, function()
+    if not Combat.on then return end
+    local plr, root = combatFindTarget()
+    if not (plr and root) then
+        Tasks.Status("combat", "Hit  |  no target")
+        return
+    end
+    Combat.lastTarget = plr.Name
+    Tasks.Status("combat", "Hit  |  " .. tostring(plr.DisplayName)
+        .. (Combat.aura and "  |  aura" or ""))
+    local myRoot = Movement.Root()
+    if not myRoot then return end
+    task.spawn(function()
+        local pos = P(function() return root.Position end)
+        if not pos then return end
+        if Combat.aura then
+            -- aura: pukul semua di radius tanpa mengejar (pola asli Hit Aura)
+            local equipped = combatEquipWeapon()
+            if equipped then
+                local tool = P(function()
+                    local ch = LocalPlayer.Character
+                    return ch and ch:FindFirstChildOfClass("Tool")
+                end)
+                if tool and (P(function() return (pos - myRoot.Position).Magnitude < 14 end)) then
+                    P(function() tool:Activate() end)
+                end
+            end
+            return
+        end
+        -- kejar: berhenti 'lead' stud di depan target (Hit Lead; negatif = lebih jauh)
+        local vel = P(function() return root.AssemblyLinearVelocity end)
+            or Vector3.new(0, 0, 0)
+        local dir = Vector3.new(vel.X, 0, vel.Z)
+        if dir.Magnitude > 1 then dir = dir.Unit else dir = Vector3.new(0, 0, 1) end
+        local standPos = pos + dir * math.abs(Combat.lead)
+        local sway = math.sin(os.clock() * 2) * (Combat.sweep / 100) * 6
+        standPos = standPos + Vector3.new(dir.Z, 0, -dir.X) * sway
+        local d = (standPos - myRoot.Position).Magnitude
+        local step = math.min(Combat.chase * 0.25, Combat.maxSpeed * 0.25, math.max(d, 4))
+        if d > 3 then
+            local delta = standPos - myRoot.Position
+            if delta.Magnitude > 0.01 then
+                P(function()
+                    myRoot.CFrame = CFrame.new(myRoot.Position + delta.Unit * step)
+                end)
+            end
+        end
+        -- pukul dengan senjata (swap 2 senjata bila dipilih)
+        Combat.swapClock = (Combat.swapClock or 0) + 0.25
+        local hold = (Combat.swapIdx == 2) and Combat.swapT2 or Combat.swapT
+        if Combat.swapClock >= hold then
+            Combat.swapClock = 0
+            Combat.swapIdx = (Combat.swapIdx == 2) and 1
+                or ((Combat.weapons[2] and Combat.weapons[2] ~= "") and 2 or 1)
+            combatEquipWeapon()
+        end
+        local tool = P(function()
+            local ch = LocalPlayer.Character
+            return ch and ch:FindFirstChildOfClass("Tool")
+        end)
+        if tool and d < 16 then
+            P(function() tool:Activate() end)
+        end
+    end)
+end)
+
+--────────────────────────────[ PERFORMANCE (modul 50_system#3) ]────────────────────────────
+
+local Perf = {
+    cap = 240,          -- "FPS Cap" 10-1000 (default 240)
+    opt = false,        -- "Optimizer"
+    optMode = "Strong", -- "Optimizer Mode" {Balanced,Strong,Max}
+    fpsHud = true,      -- "FPS and Ping" (default ON ala kode baru)
+    fpsSize = 100,      -- "FPS and Ping Size" 60-160%
+    no3d = false,       -- "Disable 3D Render"
+    bg = "White",       -- "Background Color" {White,Black}
+    hud = nil, frames = 0, t0 = nil,
+}
+
+local OPT_CLASSES = {
+    Balanced = { "ParticleEmitter", "Trail", "Beam" },
+    Strong = { "ParticleEmitter", "Trail", "Beam", "Fire", "Smoke", "Sparkles",
+               "Explosion", "PointLight", "SpotLight", "SurfaceLight" },
+    Max = { "ParticleEmitter", "Trail", "Beam", "Fire", "Smoke", "Sparkles",
+            "Explosion", "PointLight", "SpotLight", "SurfaceLight" },
+}
+
+local function perfApplyOptimizer()
+    local classes = OPT_CLASSES[Perf.optMode] or OPT_CLASSES.Strong
+    local classSet = {}
+    for _, c in ipairs(classes) do classSet[c] = true end
+    for _, inst in ipairs(Scan.Workspace()) do
+        if classSet[inst.ClassName] then
+            P(function()
+                if inst:IsA("Explosion") then inst.Visible = false else inst.Enabled = false end
+            end)
+        elseif Perf.optMode == "Max" and inst:IsA("Texture") then
+            P(function() inst.Enabled = false end)
+        end
+    end
+end
+
+local function perfBuildHud()
+    P(function()
+        if Perf.hud then Perf.hud:Destroy() end
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "ThorPerfHud"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 90
+        local lbl = Instance.new("TextLabel")
+        lbl.BackgroundTransparency = 1
+        lbl.AnchorPoint = Vector2.new(0, 0)
+        lbl.Position = UDim2.new(0, 8, 0, 8)
+        lbl.Size = UDim2.new(0, 260, 0, 24)
+        lbl.Font = Enum.Font.GothamBold
+        lbl.TextSize = math.floor(15 * Perf.fpsSize / 100 + 0.5)
+        lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+        lbl.TextStrokeTransparency = 0.4
+        lbl.TextXAlignment = Enum.TextXAlignment.Left
+        lbl.Text = "FPS -- | Ping --"
+        lbl.Parent = gui
+        gui.Parent = gethui and gethui() or LocalPlayer:FindFirstChild("PlayerGui")
+        Perf.hud = gui
+    end)
+end
+
+Tasks.Add("perf", 1.0, function()
+    -- penghitung FPS ala asli: jumlah RenderStepped per detik
+    Perf.frames = (Perf.frames or 0) + 1
+    if not Perf.t0 then Perf.t0 = os.clock() + 1 end
+    if Perf.hud and Perf.fpsHud then
+        if os.clock() >= Perf.t0 then
+            local fps = Perf.frames
+            Perf.frames = 0
+            Perf.t0 = os.clock() + 1
+            local ping = P(function() return LocalPlayer:GetNetworkPing() end) or 0
+            ping = math.floor(ping * 1000 + 0.5)
+            P(function()
+                local lbl = Perf.hud:FindFirstChildOfClass("TextLabel")
+                if lbl then
+                    lbl.Text = "FPS " .. tostring(fps) .. " | Ping " .. tostring(ping) .. "ms"
+                end
+            end)
+        end
+    else
+        Perf.frames = 0
+        Perf.t0 = nil
+    end
+end)
+
+do
+    -- RenderStepped tick agar frame terhitung presisi
+    P(function()
+        RunService.RenderStepped:Connect(function()
+            Perf.frames = (Perf.frames or 0) + 1
+        end)
+    end)
+    -- konsumsi frame di task perf: reset tiap detik lewat hud; kalau HUD
+    -- mati, frames tetap direset supaya tidak melonjak saat dinyalakan.
+    local lastOpt = 0
+    Tasks.Add("perfopt", 4.0, function()
+        if Perf.opt and os.clock() - lastOpt > 10 then
+            lastOpt = os.clock()
+            task.spawn(perfApplyOptimizer)
+        end
+    end)
+end
+
+local function perfApplyCap()
+    local cap = Perf.cap
+    if Perf.no3d and cap > 40 then cap = 40 end -- pola asli: 3D off -> max 40 FPS
+    if setfpscap then P(setfpscap, cap) end
+end
+
+local function perfApply3d()
+    P(function() RunService:Set3dRenderingEnabled(not Perf.no3d) end)
+    -- warna latar saat 3D mati (pola "Background Color" asli)
+    local col = (Perf.bg == "White") and Color3.new(1, 1, 1) or Color3.new(0, 0, 0)
+    P(function()
+        Lighting.Ambient = col
+        Lighting.OutdoorAmbient = col
+        Lighting.Brightness = Perf.no3d and 0 or 1
+    end)
+end
+
+--────────────────────────────[ UTILITY: ANTI AFK ]────────────────────────────
+
+local AntiAfk = { on = true } -- default ON ala kode baru ("Anti AFK")
+
+do
+    P(function()
+        LocalPlayer.Idled:Connect(function()
+            if not AntiAfk.on then return end
+            -- pola anti-kick standar: kirim key event maya tiap idle
+            local VIM = S("VirtualInputManager")
+            task.spawn(function()
+                pcall(function()
+                    VIM:SendKeyEvent(true, Enum.KeyCode.Space, false, game)
+                    task.wait(0.05)
+                    VIM:SendKeyEvent(false, Enum.KeyCode.Space, false, game)
+                end)
+            end)
+        end)
+    end)
+end
+
+
+
+--────────────────────────────[ ADMIN ABUSE (modul 36_admin/02_admin) ]────────────────────────────
+
+-- Capture The Egg: egg event "Capture The Egg" (Event_CaptureTheEggUid).
+-- Metode kode baru: ambil egg event, tahan di ketinggian Hold Height, jauhi
+-- pemain lain bila lebih dekat dari Keep Away Distance.
+local Capture = {
+    on = false,      -- "Auto Capture Event Egg"
+    take = false,    -- "Take It From The Holder"
+    holdHeight = 45, -- "Hold Height" 20-120 studs
+    keepAway = 45,   -- "Keep Away Distance" 20-150 studs
+    holding = false,
+}
+
+local function captureEggUid()
+    local uid = P(function() return workspace:GetAttribute("Event_CaptureTheEggUid") end)
+    if type(uid) == "string" and uid ~= "" then return uid end
+    return nil
+end
+
+local function captureFindModel(uid)
+    if not uid then return nil end
+    for _, inst in ipairs(Scan.Workspace()) do
+        if inst:IsA("Model") then
+            local a = P(function() return inst:GetAttribute("Uid")
+                or inst:GetAttribute("CaptureUid") end)
+            if a == uid then return inst end
+        end
+    end
+    return nil
+end
+
+Tasks.Add("capture", 0.35, function()
+    if not Capture.on then return end
+    local uid = captureEggUid()
+    if not uid then Tasks.Status("capture", "Waiting for Capture The Egg event") return end
+    local model = captureFindModel(uid)
+    local root = Movement.Root()
+    if not root then return end
+    -- posisi egg (model atau pemain pembawa)
+    local pos = nil
+    if model then
+        pos = P(function() return model:GetPivot().Position end)
+    end
+    if not pos and Capture.take then
+        -- cari pemain yang membawa egg event
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local tool = P(function()
+                    local ch = plr.Character
+                    return ch and ch:FindFirstChildOfClass("Tool")
+                end)
+                local tUid = tool and P(function() return tool:GetAttribute("Uid") end)
+                if tUid == uid then
+                    pos = P(function() return plr.Character
+                        and plr.Character:FindFirstChild("HumanoidRootPart").Position end)
+                    break
+                end
+            end
+        end
+    end
+    if not pos then Tasks.Status("capture", "Egg not visible") return end
+    -- jauhi pemain lain (Keep Away) + tahan di ketinggian (Hold Height)
+    local myPos = root.Position
+    local away = Vector3.new(0, 0, 0)
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LocalPlayer then
+            local pp = P(function() return plr.Character
+                and plr.Character:FindFirstChild("HumanoidRootPart").Position end)
+            if pp and (pp - myPos).Magnitude < Capture.keepAway then
+                away = away + (myPos - pp)
+            end
+        end
+    end
+    local target = Vector3.new(pos.X, Capture.holdHeight, pos.Z)
+    if away.Magnitude > 0.01 then
+        target = myPos + away.Unit * 20 + Vector3.new(0, Capture.holdHeight - myPos.Y, 0)
+    end
+    P(function() root.CFrame = CFrame.new(target) end)
+    Capture.holding = true
+    Tasks.Status("capture", "Holding event egg at " .. Capture.holdHeight .. " studs")
+end)
+
+-- Minigame Eggs: Red Light Green Light / T-Rex Run (pola asli mgSteal)
+local Minigame = { on = true } -- "Auto Steal Minigame Egg" default ON ala kode baru
+
+Tasks.Add("minigame", 1.0, function()
+    if not Minigame.on then return end
+    local rlgl = P(function() return workspace:GetAttribute("Event_RedLightGreenLight") end)
+    local trex = P(function() return workspace:GetAttribute("Event_TrexRun") end)
+    if not (rlgl == true or trex == true) then return end
+    if Steal.on and Steal.busy then return end
+    -- cari model egg minigame -> dekati & ambil lewat ProximityPrompt
+    local root = Movement.Root()
+    if not root then return end
+    for _, inst in ipairs(Scan.Workspace()) do
+        local isMg = P(function()
+            return inst:IsA("Model")
+                and (inst:GetAttribute("MinigameEgg") == true
+                    or inst:GetAttribute("EventEgg") == true
+                    or (string.find(inst.Name, "Minigame", 1, true) ~= nil
+                        and inst:FindFirstChildOfClass("ProximityPrompt", true) ~= nil))
+        end)
+        if isMg then
+            local pos = P(function() return inst:GetPivot().Position end)
+            local prompt = P(function() return inst:FindFirstChildOfClass("ProximityPrompt", true) end)
+            if pos and prompt then
+                if (pos - root.Position).Magnitude > 6 then
+                    P(function() root.CFrame = CFrame.new(pos + Vector3.new(0, 2.5, 0)) end)
+                end
+                P(function() firePromptInstance(prompt) end)
+                Tasks.Status("minigame", "Going for the minigame egg")
+            end
+            break
+        end
+    end
+end)
+
+-- Cursed Island Wars (sederhana: kejar & pukul musuh / hancurkan tembok)
+local CIW = { on = false, target = "Enemies And Base" }
+
+Tasks.Add("ciw", 1.2, function()
+    if not CIW.on then return end
+    local active = P(function() return workspace:GetAttribute("Event_CursedIslandWars") end)
+    if active ~= true then Tasks.Status("ciw", "Waiting for Cursed Island Wars") return end
+    local root = Movement.Root()
+    if not root then return end
+    -- cari target terdekat: musuh (Character pemain lawan) atau tembak/crystal
+    local best, bestD, isWall = nil, math.huge, false
+    for _, inst in ipairs(Scan.Workspace()) do
+        local isBase = P(function()
+            return inst:IsA("BasePart") and (string.find(inst.Name, "Wall", 1, true)
+                or string.find(inst.Name, "Crystal", 1, true))
+        end)
+        local isEnemy = P(function() return inst:IsA("Model")
+            and inst:GetAttribute("Team") ~= nil end)
+        if isBase or isEnemy then
+            local pos = P(function()
+                if inst:IsA("BasePart") then return inst.Position end
+                return inst:GetPivot().Position
+            end)
+            if pos then
+                local d = (pos - root.Position).Magnitude
+                if d < bestD then best, bestD, isWall = inst, d, isBase end
+            end
+        end
+    end
+    if not best then Tasks.Status("ciw", "No target on the island") return end
+    local mode = CIW.target
+    if isWall and mode == "Enemies And Base" then
+        -- musuh dulu; tembak boleh kalau tidak ada musuh
+    end
+    local pos = P(function()
+        if best:IsA("BasePart") then return best.Position end
+        return best:GetPivot().Position
+    end)
+    Tasks.Status("ciw", "Attacking " .. tostring(best.Name))
+    if bestD > 8 then
+        local delta = pos - root.Position
+        P(function()
+            root.CFrame = CFrame.new(root.Position + delta.Unit * math.min(bestD - 4, 60))
+        end)
+    end
+    local tool = P(function()
+        local ch = LocalPlayer.Character
+        return ch and ch:FindFirstChildOfClass("Tool")
+    end)
+    if tool then P(function() tool:Activate() end) end
+end)
+
+--────────────────────────────[ EVENT TAB (modul 33/34/37/38/39) ]────────────────────────────
+
+-- The Hollow: race event (RF/TheHollow/AskEnter + kejar track)
+local Hollow = { on = false, speed = 300, powerups = true }
+
+Tasks.Add("hollow", 0.6, function()
+    if not Hollow.on then return end
+    local inRace = P(function() return workspace:GetAttribute("TheHollowActive") end)
+    if inRace ~= true then
+        Tasks.Status("hollow", "Waiting for The Hollow race")
+        return
+    end
+    local root = Movement.Root()
+    if not root then return end
+    -- kejar "hollow" / checkpoint terdekat
+    local best, bestD = nil, math.huge
+    for _, inst in ipairs(Scan.Workspace()) do
+        local ok = P(function() return inst:IsA("BasePart")
+            and (string.find(inst.Name, "Checkpoint", 1, true)
+                or string.find(inst.Name, "Hollow", 1, true)) end)
+        if ok then
+            local pos = P(function() return inst.Position end)
+            if pos then
+                local d = (pos - root.Position).Magnitude
+                if d < bestD and d > 4 then best, bestD = pos, d end
+            end
+        end
+    end
+    if best then
+        local delta = best - root.Position
+        P(function()
+            root.CFrame = CFrame.new(root.Position + delta.Unit
+                * math.min(delta.Magnitude, Hollow.speed * 0.55))
+        end)
+        Tasks.Status("hollow", "Racing at " .. Hollow.speed .. " st/s")
+    end
+end)
+
+-- Phantom Express: hantu di rel kereta (RF/PhantomExpress, tool vacuum)
+local Express = {
+    on = false,       -- "Auto Phantom Express"
+    vacuum = true,    -- "Auto Vacuum Ghouler Boss"
+    tp = true,        -- "Teleport To Ghosts"
+    souls = false,    -- "Auto Trade Souls"
+    ghostTarget = "Rarest First", -- {"Rarest First","Closest"}
+    speed = 300,      -- "Walk Speed"
+}
+
+Tasks.Add("express", 0.8, function()
+    if not Express.on then return end
+    local root = Movement.Root()
+    if not root then return end
+    local best, bestD = nil, math.huge
+    for _, inst in ipairs(Scan.Workspace()) do
+        local ok = P(function() return inst:IsA("Model")
+            and (string.find(inst.Name, "Ghost", 1, true)
+                or string.find(inst.Name, "Ghoul", 1, true)
+                or string.find(inst.Name, "Soul", 1, true)) end)
+        if ok then
+            local pos = P(function() return inst:GetPivot().Position end)
+            if pos then
+                local d = (pos - root.Position).Magnitude
+                if d < bestD and d > 5 then best, bestD = pos, d end
+            end
+        end
+    end
+    if not best then Tasks.Status("express", "No ghosts around the tracks") return end
+    Tasks.Status("express", Express.vacuum and "Vacuuming ghosts" or "Chasing ghosts")
+    if Express.tp then
+        P(function() root.CFrame = CFrame.new(best + Vector3.new(0, 3, 0)) end)
+    else
+        local delta = best - root.Position
+        P(function()
+            root.CFrame = CFrame.new(root.Position + delta.Unit
+                * math.min(delta.Magnitude, Express.speed * 0.6))
+        end)
+    end
+    local tool = P(function()
+        local ch = LocalPlayer.Character
+        return ch and ch:FindFirstChildOfClass("Tool")
+    end)
+    if tool then P(function() tool:Activate() end) end
+    if Express.souls then
+        P(function() Repo.Invoke("RF/PhantomExpress/AskTradeSouls") end)
+    end
+end)
+
+-- Halloween Monsters (modul 39: Auto Farm Monsters)
+local HwMon = {
+    on = false,        -- "Auto Farm Monsters"
+    tp = true,         -- "Teleport To Monsters"
+    bloodOnly = false, -- "Only During Blood Moon"
+    bloodAll = false,  -- "Farm All Monsters In Blood Moon"
+    kill = {},         -- "Monsters To Kill" multi
+    order = "Closest", -- "Monster Order" {"Closest","Most Tokens"}
+    weapons = {},      -- "Use Weapons" multi
+    speed = 300,       -- "Walk Speed"
+}
+
+local HW_MONSTERS = {
+    "Candy Corn (+12 Candy)", "Hollow Bat (+12 Candy)", "Scarecrow (+28 Candy)",
+    "Chest Mimic (+28 Candy)", "Pumpkin Golem (+65 Candy)", "Soul Phantom (+65 Candy)",
+}
+-- bagian nama model dari label menu
+local HW_MON_PART = {
+    ["Candy Corn (+12 Candy)"] = "CandyCorn", ["Hollow Bat (+12 Candy)"] = "Bat",
+    ["Scarecrow (+28 Candy)"] = "Scarecrow", ["Chest Mimic (+28 Candy)"] = "Mimic",
+    ["Pumpkin Golem (+65 Candy)"] = "Pumpkin", ["Soul Phantom (+65 Candy)"] = "Phantom",
+}
+
+local function hwMonSelected(name)
+    if next(HwMon.kill) == nil then return true end
+    return HwMon.kill[name] == true
+end
+
+Tasks.Add("hwmon", 0.8, function()
+    if not HwMon.on then return end
+    local bm = P(function() return workspace:GetAttribute("BloodMoon") end)
+    if HwMon.bloodOnly and bm ~= true then
+        Tasks.Status("hwmon", "Waiting for blood moon")
+        return
+    end
+    local root = Movement.Root()
+    if not root then return end
+    local best, bestD = nil, math.huge
+    for _, inst in ipairs(Scan.Workspace()) do
+        local ok = P(function() return inst:IsA("Model") and (
+            inst:GetAttribute("Monster") == true
+            or inst:GetAttribute("IsMonster") == true
+            or string.find(inst.Name, "Monster", 1, true) ~= nil) end)
+        if ok then
+            local nm = tostring(inst.Name)
+            local match = false
+            for label, part in pairs(HW_MON_PART) do
+                if hwMonSelected(label) and string.find(nm, part, 1, true) then
+                    match = true break
+                end
+            end
+            if match then
+                local pos = P(function() return inst:GetPivot().Position end)
+                if pos then
+                    local d = (pos - root.Position).Magnitude
+                    if d < bestD then best, bestD = pos, d end
+                end
+            end
+        end
+    end
+    if not best then Tasks.Status("hwmon", "No selected monsters nearby") return end
+    Tasks.Status("hwmon", "Farming monsters" .. (bm and " | blood moon" or ""))
+    if HwMon.tp then
+        P(function() root.CFrame = CFrame.new(best + Vector3.new(0, 3, 0)) end)
+    else
+        local delta = best - root.Position
+        P(function()
+            root.CFrame = CFrame.new(root.Position + delta.Unit
+                * math.min(delta.Magnitude, HwMon.speed * 0.6))
+        end)
+    end
+    local tool = P(function()
+        local ch = LocalPlayer.Character
+        return ch and ch:FindFirstChildOfClass("Tool")
+    end)
+    if tool then P(function() tool:Activate() end) end
+end)
+
+-- Pumpkin Moon + Pumpkin Boss (modul 39)
+local HwPump = { on = true, tp = true, speed = 300 } -- "Auto Pumpkin Moon" default ON
+local PBoss = { on = false, dodge = true }           -- "Auto Pumpkin Boss" + "Auto Dodge Attacks"
+
+Tasks.Add("hwpump", 0.7, function()
+    if not (HwPump.on or PBoss.on) then return end
+    local pm = P(function() return workspace:GetAttribute("PumpkinMoon") end)
+    local boss = P(function() return workspace:GetAttribute("PumpkinBossActive") end)
+    if pm ~= true and boss ~= true then
+        Tasks.Status("hwpump", "Waiting for Pumpkin Moon")
+        return
+    end
+    local root = Movement.Root()
+    if not root then return end
+    if PBoss.on and boss == true then
+        -- cari boss, jaga jarak + dodge (pola Auto Dodge)
+        local bPos = nil
+        for _, inst in ipairs(Scan.Workspace()) do
+            local ok = P(function() return inst:IsA("Model")
+                and string.find(inst.Name, "Boss", 1, true) end)
+            if ok then
+                bPos = P(function() return inst:GetPivot().Position end)
+                break
+            end
+        end
+        if bPos then
+            Tasks.Status("hwpump", "Pumpkin Boss  |  dodging")
+            local dir = (root.Position - bPos)
+            if dir.Magnitude < 20 and PBoss.dodge then
+                P(function()
+                    root.CFrame = CFrame.new(root.Position + dir.Unit * 24 + Vector3.new(0, 6, 0))
+                end)
+            end
+            local tool = P(function()
+                local ch = LocalPlayer.Character
+                return ch and ch:FindFirstChildOfClass("Tool")
+            end)
+            if tool then P(function() tool:Activate() end) end
+            return
+        end
+    end
+    if HwPump.on then
+        -- kumpulkan pumpkin (RE/PumpkinBoss/Collect / sentuh model)
+        for _, inst in ipairs(Scan.Workspace()) do
+            local ok = P(function() return inst:IsA("BasePart")
+                and string.find(inst.Name, "Pumpkin", 1, true) end)
+            if ok then
+                local pos = P(function() return inst.Position end)
+                if pos then
+                    local d = (pos - root.Position).Magnitude
+                    if d < 400 then
+                        if HwPump.tp then
+                            P(function() root.CFrame = CFrame.new(pos + Vector3.new(0, 3, 0)) end)
+                        else
+                            local delta = pos - root.Position
+                            P(function()
+                                root.CFrame = CFrame.new(root.Position + delta.Unit
+                                    * math.min(delta.Magnitude, HwPump.speed * 0.6))
+                            end)
+                        end
+                        P(function() Repo.Fire("RE/PumpkinBoss/Collect") end)
+                        Tasks.Status("hwpump", "Collecting pumpkins")
+                        return
+                    end
+                end
+            end
+        end
+    end
+end)
+
+-- Ghost Dog Quest + Fishing (modul 39; remotes dari peta Task 16)
+local HwDog = { on = false }   -- "Auto Ghost Dog Quest"
+local HwFish = { on = false, luck = "x1.5 Perfect", spot = "Default",
+                 spots = {}, speed = 300, lastCast = 0 }
+
+Tasks.Add("hwdog", 3.0, function()
+    if not HwDog.on then return end
+    -- rantai quest Ghost Dog: coba Accept/Progress/Claim (pcall semua jalur)
+    local done = 0
+    for _, path in ipairs({ "RF/GhostDogQuest/AskAcceptQuest",
+                            "RF/GhostDogQuest/AskStartQuest",
+                            "RF/GhostDogQuest/AskProgressQuest",
+                            "RF/GhostDogQuest/AskClaimReward",
+                            "RF/GhostDogQuest/AskClaimQuestReward" }) do
+        local r = P(function() return Repo.Invoke(path) end)
+        if r ~= nil then done = done + 1 end
+    end
+    Tasks.Status("hwdog", done > 0 and "Ghost Dog quest progressing"
+        or "Ghost Dog quest: waiting/none available")
+end)
+
+local FISH_LUCK_DELAY = {
+    ["x1.5 Perfect"] = 7, ["x1.2"] = 6, ["x1.1"] = 5, ["x1.0 Fastest"] = 3,
+}
+
+Tasks.Add("hwfish", 1.5, function()
+    if not HwFish.on then return end
+    local waitS = FISH_LUCK_DELAY[HwFish.luck] or 7
+    if os.clock() - HwFish.lastCast < waitS then return end
+    HwFish.lastCast = os.clock()
+    local root = Movement.Root()
+    if not root then return end
+    -- posisi spot: Default = tempat berdiri; Spot 1-3 = tersimpan
+    local pos = root.Position
+    if HwFish.spot ~= "Default" then
+        local n = tonumber(string.match(HwFish.spot, "%d")) or 1
+        local saved = HwFish.spots[n]
+        if saved then
+            P(function() root.CFrame = CFrame.new(saved) end)
+            pos = saved
+        end
+    end
+    P(function() Repo.Invoke("RF/Fishing/Cast", pos) end)
+    task.delay(waitS - 1.5, function()
+        P(function() Repo.Invoke("RF/Fishing/Reel") end)
+        P(function() Repo.Invoke("RF/Fishing/Reel", true) end)
+    end)
+    Tasks.Status("hwfish", "Casting (" .. HwFish.luck .. ")")
+end)
+
+-- Priority Rotation: gantian Fishing <-> Treadmill (modul 39)
+local Rotation = { on = false, mode = "Timer", fishMin = 5, treadMin = 5,
+                   phase = "fishing", swapAt = 0 }
+
+Tasks.Add("rotation", 5.0, function()
+    if not Rotation.on then return end
+    local fishEl = Config.Elements["event/fishing"]
+    local treadEl = Config.Elements["farm/tread"]
+    if not (fishEl and treadEl) then return end
+    if Rotation.mode == "Timer" then
+        local now = os.clock()
+        if Rotation.swapAt == 0 then Rotation.swapAt = now + Rotation.fishMin * 60 end
+        if now >= Rotation.swapAt then
+            if Rotation.phase == "fishing" then
+                P(function() fishEl:Set(false, true) end)
+                P(function() treadEl:Set(true, true) end)
+                Rotation.phase = "treadmill"
+                Rotation.swapAt = now + Rotation.treadMin * 60
+                Tasks.Status("rotation", "Switched to treadmill")
+            else
+                P(function() treadEl:Set(false, true) end)
+                P(function() fishEl:Set(true, true) end)
+                Rotation.phase = "fishing"
+                Rotation.swapAt = now + Rotation.fishMin * 60
+                Tasks.Status("rotation", "Switched to fishing")
+            end
+        else
+            local left = math.max(0, Rotation.swapAt - now)
+            Tasks.Status("rotation", "Now: " .. Rotation.phase .. " | switch in "
+                .. tostring(math.floor(left / 60)) .. "m " .. tostring(math.floor(left % 60)) .. "s")
+        end
+    end
+end)
+
+--────────────────────────────[ HALLOWEEN STEAL EXT (modul 38) ]────────────────────────────
+
+local HWX = {
+    on = false,       -- "Auto Steal Halloween Eggs" (admin/hwsteal)
+    instant = true,   -- "Instant Steal Halloween Eggs" default ON
+    holders = true,   -- "Take Halloween Eggs From Holders" default ON
+    index = true,      -- "Steal Missing Halloween Index" default ON
+    placeHatch = false, -- "Place And Hatch Missing Index Eggs"
+    buy = false,       -- "Auto Buy Halloween Dimension Egg"
+    eggs = {},        -- "Halloween Eggs To Steal" multi
+    rarities = {},    -- "Halloween Egg Rarities" multi
+    minValue = 0,      -- "Min Value"
+}
+
+-- filter tambahan untuk egg Halloween di stealFilterOk — didefinisikan di
+-- menu callback: HWXHooked; di sini hanya ekstensi buy & place-hatch.
+
+-- filter egg Halloween dipakai stealFilterOk (hook dipasang di atas defs)
+Steal.hwFilterHook = function(egg)
+    if not HWX.on then return false end
+    local name = tostring(egg.Category or egg.Name or "")
+    if next(HWX.eggs) ~= nil and not HWX.eggs[name] then return false end
+    if next(HWX.rarities) ~= nil and not HWX.rarities[tostring(egg.RarityLabel or "")] then return false end
+    if HWX.minValue > 0 and (egg.Value or 0) < HWX.minValue then return false end
+    return true
+end
+
+Tasks.Add("hwbuy", 6.0, function()
+    if not HWX.buy then return end
+    local r = P(function() return Repo.Invoke("RF/HalloweenDimension/AskBuyEgg") end)
+    if r ~= nil then
+        Tasks.Status("hwbuy", "Halloween Dimension egg bought")
+    end
+end)
+
+Tasks.Add("hwplace", 8.0, function()
+    if not HWX.placeHatch then return end
+    -- taruh egg index yang hilang lalu hatch (pola Place And Hatch)
+    local own = EggState.InBagOwn()
+    for uid in pairs(own) do
+        local r = P(function() return Repo.Invoke("RF/EggWorld/AskHatch", uid) end)
+        if r ~= nil then break end
+    end
+end)
+
+--────────────────────────────[ FARM HUD (modul 47_farmhud) ]────────────────────────────
+
+local FarmHud = {
+    on = false,        -- "Farm HUD" default OFF
+    hideGame = true,   -- "Hide Game UI"
+    items = { Speed = true, Cash = true }, -- "HUD Items"
+    cards = 4,         -- "Showcase Cards" 1-6
+    size = 100,        -- "HUD Size" 50-120%
+    image = "Egg Image", -- "Egg Card Image"
+    gui = nil, panel = nil, labels = {},
+}
+
+local function farmHudBuild()
+    P(function()
+        if FarmHud.gui then FarmHud.gui:Destroy() end
+        local gui = Instance.new("ScreenGui")
+        gui.Name = "ThorFarmHud"
+        gui.ResetOnSpawn = false
+        gui.DisplayOrder = 60
+        local panel = Instance.new("Frame")
+        panel.AnchorPoint = Vector2.new(1, 0.5)
+        panel.Position = UDim2.new(1, -12, 0.5, 0)
+        panel.Size = UDim2.new(0, math.floor(210 * FarmHud.size / 100), 0, 30)
+        panel.BackgroundColor3 = Color3.fromRGB(11, 14, 23)
+        panel.BackgroundTransparency = 0.25
+        panel.BorderSizePixel = 0
+        panel.Parent = gui
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = UDim.new(0, 8)
+        corner.Parent = panel
+        local layout = Instance.new("UIListLayout")
+        layout.FillDirection = Enum.FillDirection.Vertical
+        layout.Padding = UDim.new(0, 2)
+        layout.SortOrder = Enum.SortOrder.LayoutOrder
+        layout.Parent = panel
+        FarmHud.labels = {}
+        for i, key in ipairs({ "Speed", "Cash", "Stolen", "Cards" }) do
+            local lbl = Instance.new("TextLabel")
+            lbl.BackgroundTransparency = 1
+            lbl.Size = UDim2.new(1, -8, 0, 22)
+            lbl.Font = Enum.Font.GothamBold
+            lbl.TextSize = math.floor(13 * FarmHud.size / 100 + 0.5)
+            lbl.TextColor3 = Color3.fromRGB(240, 244, 255)
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.Text = ""
+            lbl.LayoutOrder = i
+            lbl.Parent = panel
+            FarmHud.labels[key] = lbl
+        end
+        gui.Parent = gethui and gethui() or LocalPlayer:FindFirstChild("PlayerGui")
+        FarmHud.gui = gui
+        FarmHud.panel = panel
+        panel.Active = true
+        -- drag panel (pola asli: drag any panel)
+        local dragging, dragStart, startPos = false, nil, nil
+        panel.InputBegan:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = true
+                dragStart = input.Position
+                startPos = panel.Position
+            end
+        end)
+        UserInputService.InputChanged:Connect(function(input)
+            if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
+                or input.UserInputType == Enum.UserInputType.Touch) then
+                local delta = input.Position - dragStart
+                P(function()
+                    panel.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X,
+                        startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+                end)
+            end
+        end)
+        UserInputService.InputEnded:Connect(function(input)
+            if input.UserInputType == Enum.UserInputType.MouseButton1
+                or input.UserInputType == Enum.UserInputType.Touch then
+                dragging = false
+            end
+        end)
+    end)
+end
+
+Tasks.Add("farmhud", 1.0, function()
+    if not FarmHud.on then
+        if FarmHud.gui then
+            P(function() FarmHud.gui:Destroy() end)
+            FarmHud.gui = nil
+        end
+        return
+    end
+    if not FarmHud.gui then farmHudBuild() end
+    local labels = FarmHud.labels
+    if labels.Speed and FarmHud.items.Speed then
+        local sp = P(function()
+            return LocalPlayer:FindFirstChild("leaderstats")
+                and LocalPlayer.leaderstats:FindFirstChild("Speed")
+        end)
+        local v = sp and P(function() return sp.Value end) or nil
+        P(function() labels.Speed.Text = "Speed: " .. (v and fmtNum(v) or "--") end)
+    end
+    if labels.Cash and FarmHud.items.Cash then
+        local money = Repo.SaveData()
+        local cash = money and (tonumber(money.Money) or money.Money) or nil
+        P(function() labels.Cash.Text = "Cash: " .. (cash and ("$" .. fmtNum(cash)) or "--") end)
+    end
+    if labels.Stolen and FarmHud.items.Stolen then
+        P(function()
+            labels.Stolen.Text = "Stolen: " .. tostring(Steal.stolen)
+                .. "  |  best: " .. tostring(Steal.best and Steal.best.Name or "-")
+        end)
+    end
+    if labels.Cards and FarmHud.items.Cards then
+        -- showcase mini-cards: top N egg lapangan sesuai prioritas
+        local targets = EggState.StealTargets()
+        local sorted = {}
+        for _, t in ipairs(targets) do
+            if t.Kind ~= "Base" then sorted[#sorted + 1] = t end
+        end
+        table.sort(sorted, function(a, b) return (a.Value or 0) > (b.Value or 0) end)
+        local lines = {}
+        for i = 1, math.min(FarmHud.cards, #sorted) do
+            local t = sorted[i]
+            lines[#lines + 1] = tostring(t.Name) .. "  $" .. fmtNum(t.Value or 0) .. "/s"
+        end
+        P(function()
+            labels.Cards.Text = #lines > 0 and table.concat(lines, "\n") or "No eggs in sight"
+        end)
+    end
+end)
+
+--────────────────────────────[ ANTI GUARD PANEL (modul 10_steal#2) ]────────────────────────────
+
+local GuardPanel = { gui = nil }
+
+Tasks.Add("guardpanel", 0.5, function()
+    local want = Steal.on and Steal.agPanel
+    if not want then
+        if GuardPanel.gui then
+            P(function() GuardPanel.gui:Destroy() end)
+            GuardPanel.gui = nil
+        end
+        return
+    end
+    if not GuardPanel.gui then
+        P(function()
+            local gui = Instance.new("ScreenGui")
+            gui.Name = "ThorGuardPanel"
+            gui.ResetOnSpawn = false
+            gui.DisplayOrder = 70
+            local chip = Instance.new("Frame")
+            chip.AnchorPoint = Vector2.new(1, 1)
+            chip.Position = UDim2.new(1, -10, 1, -10)
+            chip.Size = UDim2.new(0, 170, 0, 30)
+            chip.BackgroundColor3 = Color3.fromRGB(24, 28, 42)
+            chip.BackgroundTransparency = 0.2
+            chip.BorderSizePixel = 0
+            local lbl = Instance.new("TextLabel")
+            lbl.BackgroundTransparency = 1
+            lbl.Size = UDim2.new(1, -10, 1, 0)
+            lbl.Position = UDim2.new(0, 10, 0, 0)
+            lbl.Font = Enum.Font.GothamBold
+            lbl.TextSize = 12
+            lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
+            lbl.TextXAlignment = Enum.TextXAlignment.Left
+            lbl.Text = "GUARD  |  checking"
+            lbl.Name = "Lbl"
+            lbl.Parent = chip
+            local corner = Instance.new("UICorner")
+            corner.CornerRadius = UDim.new(0, 8)
+            corner.Parent = chip
+            chip.Parent = gui
+            gui.Parent = gethui and gethui() or LocalPlayer:FindFirstChild("PlayerGui")
+            GuardPanel.gui = gui
+        end)
+    end
+    -- status guard: ada guard aktif dekat target berikutnya?
+    local near = false
+    local myPos = Movement.Pos()
+    if myPos then
+        local ga = Repo.GuardAreas()
+        if ga then
+            for _, g in ipairs(ga:GetChildren()) do
+                local base = g:IsA("Model")
+                    and (g:FindFirstChild("HumanoidRootPart") or g:FindFirstChildWhichIsA("BasePart"))
+                    or g
+                if base and base:IsA("BasePart") then
+                    local d = P(function() return (base.Position - myPos).Magnitude end)
+                    if d and d < 120 then
+                        near = true break
+                    end
+                end
+            end
+        end
+    end
+    if GuardPanel.gui then
+        P(function()
+            local lbl = GuardPanel.gui:FindFirstChild("Lbl", true)
+            if lbl then
+                if near then
+                    lbl.Text = "GUARD  |  nearby - careful"
+                    lbl.TextColor3 = Color3.fromRGB(255, 120, 120)
+                else
+                    lbl.Text = "GUARD  |  clear"
+                    lbl.TextColor3 = Color3.fromRGB(120, 255, 160)
+                end
+            end
+        end)
+    end
+end)
+
+--────────────────────────────[ PREDICTOR (modul 14/21) ]────────────────────────────
+
+local Predictor = { sort = "Value", spotlight = true }
+
+local function predictorSorted()
+    local list = {}
+    for _, egg in ipairs(EggState.FieldEggs()) do
+        list[#list + 1] = egg
+    end
+    local mode = Predictor.sort
+    table.sort(list, function(a, b)
+        if mode == "Rarity" then
+            if (a.RarityNum or 0) ~= (b.RarityNum or 0) then
+                return (a.RarityNum or 0) > (b.RarityNum or 0)
+            end
+            return (a.Value or 0) > (b.Value or 0)
+        elseif mode == "Time Left" then
+            return (a.TimeLeft or a.Time or 0) < (b.TimeLeft or b.Time or 0)
+        end
+        return (a.Value or 0) > (b.Value or 0)
+    end)
+    return list
+end
+
+Tasks.Add("predictor", 2.0, function()
+    local list = predictorSorted()
+    local lines = {}
+    for i = 1, math.min(#list, 15) do
+        local e = list[i]
+        local extra = ""
+        if e.TimeLeft or e.Time then
+            local t = tonumber(e.TimeLeft or e.Time) or 0
+            if t > 0 then
+                extra = "  |  " .. tostring(math.floor(t / 60 + 0.5)) .. "m left"
+            end
+        end
+        lines[#lines + 1] = tostring(i) .. ". " .. tostring(e.Name)
+            .. "  [" .. tostring(e.RarityLabel or "?") .. "]"
+            .. "  $" .. fmtNum(e.Value or 0) .. "/s" .. extra
+    end
+    local txt = #lines > 0 and table.concat(lines, "\n")
+        or "No field eggs right now"
+    Tasks.Status("predictor", txt)
+end)
+
+-- Fuse Predictor: preview kandidat fuse berikutnya
+local FusePred = {}
+Tasks.Add("fusepred", 4.0, function()
+    if not Fuse.on then
+        Tasks.Status("fusepred", "Turn on Auto Fuse Machine to preview")
+        return
+    end
+    local groups = Fuse.Candidates()
+    local n = 0
+    for _, g in pairs(groups) do n = n + 1 end
+    Tasks.Status("fusepred", n > 0
+        and (tostring(n) .. " species ready to fuse (Auto Fuse on)")
+        or "No species with 2+ copies yet")
+end)
+
+--────────────────────────────[ SERVER (modul 50_system#1) ]────────────────────────────
+
+local ServerX = {
+    autoLoad = true,     -- "Auto Load Script" default ON
+    autoRejoin = false,  -- "Auto Rejoin When Disconnect"
+    hopMode = "Least Players", -- {"Least Players","Most Players","Random"}
+}
+
+function ServerX.Rejoin()
+    P(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, game.JobId, LocalPlayer)
+    end)
+end
+
+function ServerX.JoinJob(jobId)
+    jobId = tostring(jobId or ""):gsub("%s", "")
+    if jobId == "" then Notify("Server", "Isi Job ID dulu", 3) return end
+    Notify("Server", "Joining " .. jobId, 3)
+    P(function()
+        TeleportService:TeleportToPlaceInstance(game.PlaceId, jobId, LocalPlayer)
+    end)
+end
+
+function ServerX.CopyJobId()
+    local id = tostring(game.JobId or "")
+    if setclipboard then
+        P(setclipboard, id)
+        Notify("Server", "Job ID disalin: " .. id, 4)
+    else
+        Notify("Server", "Job ID: " .. id, 6)
+    end
+end
+
+do
+    -- Auto Rejoin When Disconnect (pola asli: rejoin on kick)
+    P(function()
+        LocalPlayer.OnTeleport:Connect(function(state)
+            if state == Enum.TeleportState.Failed and ServerX.autoRejoin then
+                task.wait(2)
+                ServerX.Rejoin()
+            end
+        end)
+    end)
+    -- Auto Load Script (queue_on_teleport) dikendalikan boot sequence
+    -- (queueReload cek ServerX.autoLoad) — lihat bagian boot.
+end
+
+
+--════════════ BAGIAN 5 — STEAL PANEL (metode baru: hijack HUD game) ════════════
+-- Dipetakan dari modul 12_hud kode baru:
+--   * tombol toggle = KLONING tombol Pets game, menempel di kolom tombol
+--     kanan (RightButtons), mengikuti posisi tombol Eggs tiap frame
+--   * panel = KLONING frame ActivePets game (ScreenGui sendiri), slide dari
+--     kanan, judul diganti "Steal Panel"
+--   * header: tombol "Sort: <prioritas>" (siklus 5 mode, sync elemen menu
+--     Farm > Auto Steal > Steal Priority) + tombol tutup ">"
+--   * baris 3 tombol: Steal (Auto Steal) · HW (Halloween) · All/Halloween/Field
+--   * kartu egg: rank #N, warna rarity, nama, $value/s, detail
+--     (rarity · area · mutasi · jarak), ★ antre prioritas, ▲▼ urut, X batal;
+--     klik kartu = STEAL SEKARANG (pola StealNow)
+--   * daftar = pick queue (Steal.pick) + maks 8 saran target teratas yang
+--     lolos filter (pola StealPlan: picks + top-8 suggested)
+--   * nama instance GUI dirandom (pola e4/IT asli) + ingat status terbuka
+-- Fallback: bila HUD game tidak ditemukan -> panel mandiri layout sama.
+
+-- ==== tema gradien (gT asli; ThorHub pakai nilai identik supaya mirip) ====
+local function spSeq(points)
+    local kp = {}
+    for _, p in ipairs(points) do kp[#kp + 1] = ColorSequenceKeypoint.new(p[1], p[2]) end
+    return ColorSequence.new(kp)
+end
+local function spRGB(r, g, b) return Color3.fromRGB(r, g, b) end
+
+local SP_Theme = {}
+SP_Theme.Hud = { Color = spSeq({ {0, spRGB(0, 118, 255)}, {1, spRGB(72, 204, 255)} }), Rotation = -90,
+                 Stroke = spRGB(0, 28, 76), Light = spRGB(172, 226, 255) }
+SP_Theme.Steal = { Color = spSeq({ {0, spRGB(60, 255, 0)}, {1, spRGB(136, 255, 0)} }), Rotation = -90,
+                   Stroke = spRGB(11, 72, 0), Light = spRGB(190, 255, 180) }
+SP_Theme.Queued = { Color = spSeq({ {0, spRGB(118, 118, 132)}, {1, spRGB(172, 172, 186)} }), Rotation = -90,
+                    Stroke = spRGB(28, 28, 34), Light = spRGB(214, 214, 226) }
+SP_Theme.PriorityOn = { Color = spSeq({ {0, spRGB(255, 247, 0)}, {1, spRGB(255, 136, 0)} }), Rotation = 90,
+                        Stroke = spRGB(0, 0, 0), Light = spRGB(132, 112, 0) }
+SP_Theme.Cancel = { Color = spSeq({ {0, spRGB(214, 17, 17)}, {1, spRGB(253, 20, 20)} }), Rotation = -90,
+                    Stroke = spRGB(72, 0, 0), Light = spRGB(255, 103, 103) }
+SP_Theme.Toggle = { Color = spSeq({ {0, spRGB(132, 74, 255)}, {0.34, spRGB(178, 74, 255)},
+                     {0.6, spRGB(255, 104, 206)}, {0.78, spRGB(255, 168, 232)}, {1, spRGB(146, 66, 255)} }),
+                    Rotation = -115, Stroke = spRGB(44, 10, 80), Light = spRGB(226, 178, 255) }
+
+-- ==== util GUI ====
 local function spNew(class, props, parent)
     local inst = Instance.new(class)
     if props then
@@ -3387,39 +4910,216 @@ local function spNew(class, props, parent)
             P(function() inst[k] = v end)
         end
     end
-    if parent then
-        P(function() inst.Parent = parent end)
-    end
+    if parent then P(function() inst.Parent = parent end) end
     return inst
 end
 
-local function spCorner(parent, r)
-    spNew("UICorner", { CornerRadius = UDim.new(0, r or 6) }, parent)
+local function spRandName()
+    local ok, guid = pcall(function()
+        return HttpService:GenerateGUID(false):gsub('-', ''):sub(1, 14)
+    end)
+    if ok and guid then return guid end
+    return tostring(math.random(1e6, 9e6))
 end
 
-local function spStroke(parent)
-    spNew("UIStroke", { Color = SP_STROKE, Thickness = 1 }, parent)
+local function spRename(inst)
+    P(function()
+        inst.Name = spRandName()
+        for _, d in ipairs(inst:GetDescendants()) do d.Name = spRandName() end
+    end)
+end
+
+-- ==== Steal Plan API (pola StealPlan/kT kode baru) ====
+-- urut target sesuai prioritas aktif
+local function StealPanelSortTargets(targets, mode)
+    local sorted = {}
+    for _, t in ipairs(targets) do sorted[#sorted + 1] = t end
+    local m = mode or Steal.priority
+    table.sort(sorted, function(a, b)
+        local ka, kb
+        if m == "Best Rarity" then
+            ka, kb = a.RarityNum or 0, b.RarityNum or 0
+        elseif m == "Biggest Weight" then
+            ka, kb = a.Scale or 0, b.Scale or 0
+        elseif m == "Best Mutation" then
+            ka, kb = #a.Mutations or 0, #b.Mutations or 0
+        elseif m == "Lowest Value" then
+            return (a.Value or 0) < (b.Value or 0)
+        else -- Highest Value (default kode baru)
+            ka, kb = a.Value or 0, b.Value or 0
+        end
+        if ka ~= kb then return ka > kb end
+        return (a.Value or 0) > (b.Value or 0)
+    end)
+    return sorted
+end
+
+-- plan = picks + maks 8 saran target lolos filter (pola asli rT<8)
+function Steal.Plan()
+    local out, seen = {}, {}
+    for _, key in ipairs(Steal.pick) do
+        if not seen[key] then seen[key] = true out[#out + 1] = key end
+    end
+    if Steal.on then
+        local targets = EggState.StealTargets()
+        local sorted = StealPanelSortTargets(targets, Steal.priority)
+        local added = 0
+        for _, egg in ipairs(sorted) do
+            if added >= 8 then break end
+            if egg.Kind ~= "Base" and not seen[egg.Key] and stealFilterOk(egg) then
+                seen[egg.Key] = true
+                out[#out + 1] = egg.Key
+                added = added + 1
+            end
+        end
+    end
+    return out
+end
+
+function Steal.Now(key)
+    if type(key) ~= "string" then return end
+    Steal.pick = { key }
+    Steal.lock = key
+    if not Steal.on then
+        Steal.on = true
+        local el = Config.Elements["farm/steal"]
+        if el and el.Set then P(function() el:Set(true, true) end) end
+    end
+    Tasks.Wake("steal")
+end
+
+function Steal.Prioritize(key)
+    if type(key) ~= "string" then return end
+    local idx = table.find(Steal.pick, key)
+    if idx then table.remove(Steal.pick, idx) end
+    table.insert(Steal.pick, 1, key)
+    Steal.lock = key
+    if not Steal.on then
+        Steal.on = true
+        local el = Config.Elements["farm/steal"]
+        if el and el.Set then P(function() el:Set(true, true) end) end
+    end
+    Tasks.Wake("steal")
+end
+
+function Steal.Cancel(key)
+    if type(key) ~= "string" then return end
+    local idx = table.find(Steal.pick, key)
+    if idx then table.remove(Steal.pick, idx) end
+    if Steal.lock == key then Steal.lock = nil end
+end
+
+function Steal.MoveInPlan(key, delta)
+    local plan = Steal.Plan()
+    local i = table.find(plan, key)
+    if not i then return end
+    local j = i + (delta or 0)
+    if j < 1 or j > #plan or not plan[j] then return end
+    plan[i], plan[j] = plan[j], plan[i]
+    local wasPick = {}
+    for _, k in ipairs(Steal.pick) do wasPick[k] = true end
+    Steal.pick = {}
+    for _, k in ipairs(plan) do
+        if wasPick[k] then Steal.pick[#Steal.pick + 1] = k end
+    end
+end
+
+-- ==== pencari HUD game (pola X4 asli) ====
+local function spFindGameHud()
+    local pg = P(function() return LocalPlayer:FindFirstChildOfClass("PlayerGui") end)
+    if not pg then return nil end
+    local hud = P(function() return pg:FindFirstChild("HUD") end)
+    if not hud then return nil end
+    local gameHud = P(function() return hud:FindFirstChild("GameHUD") end)
+    local right = gameHud and P(function() return gameHud:FindFirstChild("RightButtons") end)
+    local eggs = right and P(function() return right:FindFirstChild("EggsButton") end)
+    local pets = right and P(function() return right:FindFirstChild("PetsButton") end)
+    local active = P(function() return pg:FindFirstChild("ActivePets") end)
+    local frame = active and P(function() return active:FindFirstChild("Frame") end)
+    if eggs and pets and frame then
+        return { PlayerGui = pg, RightButtons = right, Eggs = eggs, Pets = pets,
+                 ActivePetsFrame = frame }
+    end
+    return nil
+end
+
+local function spClone(inst)
+    local ok, c = pcall(function() return inst:Clone() end)
+    if not (ok and typeof(c) == "Instance") then return nil end
+    P(function()
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") then d:Destroy() end
+        end
+    end)
+    return c
+end
+
+-- ==== objek panel ====
+local StealPanel = {
+    gui = nil, panelGui = nil, root = nil, list = nil, rows = {},
+    btnGui = nil, btn = nil, hudConns = {},
+    open = false, built = false, animating = false,
+    filter = "All", -- "All" | "Halloween" | "Field" (pola M4 asli)
+    SORTS = { "Best Rarity", "Biggest Weight", "Best Mutation", "Highest Value", "Lowest Value" },
+    mode = "hijack", -- "hijack" (HUD game) | "own" (fallback)
+    cards = {}, sel = nil,
+    lblTitle = nil, lblSort = nil, btnClose = nil,
+    rowSteal = nil, rowHw = nil, rowFilter = nil,
+}
+
+local SP_BG = Color3.fromRGB(11, 14, 23)
+local SP_CARD = Color3.fromRGB(21, 26, 41)
+local SP_STROKE = Color3.fromRGB(45, 58, 88)
+local SP_TEXT = Color3.fromRGB(240, 244, 255)
+local SP_DIM = Color3.fromRGB(145, 155, 180)
+local SP_GREEN = Color3.fromRGB(88, 255, 120)
+local SP_RED = Color3.fromRGB(255, 92, 100)
+local SP_GOLD = Color3.fromRGB(255, 200, 60)
+local SP_PURPLE = Color3.fromRGB(178, 120, 255)
+
+local function spRarityColor(num)
+    num = tonumber(num) or 0
+    local map = {
+        [1] = Color3.fromRGB(196, 200, 210), [2] = Color3.fromRGB(94, 219, 132),
+        [3] = Color3.fromRGB(86, 156, 255), [4] = Color3.fromRGB(178, 102, 255),
+        [5] = Color3.fromRGB(255, 173, 51), [6] = Color3.fromRGB(255, 84, 112),
+        [7] = Color3.fromRGB(88, 116, 255), [8] = Color3.fromRGB(255, 214, 64),
+        [9] = Color3.fromRGB(120, 240, 220), [10] = Color3.fromRGB(255, 240, 130),
+    }
+    return map[num] or Color3.fromRGB(255, 255, 255)
+end
+
+-- klik suara (pola UiClick asli: pop acak)
+local function spClick()
+    P(function()
+        local snd = Instance.new("Sound")
+        snd.SoundId = "rbxassetid://100671636189844"
+        snd.Volume = 1.5
+        snd.PlaybackSpeed = 0.93 + math.random() * 0.13
+        snd.Parent = workspace
+        snd:Play()
+        game:GetService("Debris"):AddItem(snd, 3)
+    end)
 end
 
 function StealPanel.Destroy()
-    for _, c in ipairs(StealPanel.conns) do
+    for _, c in ipairs(StealPanel.hudConns) do
         P(function() c:Disconnect() end)
     end
-    StealPanel.conns = {}
-    if StealPanel.gui then
-        P(function() StealPanel.gui:Destroy() end)
-    end
-    StealPanel.gui = nil
+    StealPanel.hudConns = {}
+    if StealPanel.panelGui then P(function() StealPanel.panelGui:Destroy() end) end
+    if StealPanel.btnGui then P(function() StealPanel.btnGui:Destroy() end) end
+    StealPanel.panelGui = nil
+    StealPanel.btnGui = nil
+    StealPanel.btn = nil
     StealPanel.root = nil
     StealPanel.list = nil
     StealPanel.rows = {}
     StealPanel.built = false
     StealPanel.open = false
-    StealPanel.sig = ""
 end
 
 local function destroyOldPanels()
-    -- buang panel dari eksekusi sebelumnya (re-execute / rejoin)
     local scopes = {}
     if gethui then
         local h = P(gethui)
@@ -3431,538 +5131,572 @@ local function destroyOldPanels()
     end
     for _, scope in ipairs(scopes) do
         for _, d in ipairs(scope:GetChildren()) do
-            if d.Name == "ThorHubStealPanel" then
+            local n = tostring(d.Name)
+            if n == "ThorHubStealPanel" or n == "ThorSP" or n == "ThorSPBtn" then
                 P(function() d:Destroy() end)
             end
         end
     end
 end
 
-local function selectEgg(eg)
-    -- entry snapshot tidak punya Model; validasi cukup lewat Key
-    if not eg or not eg.Key then return end
-    StealPanel.selected = eg
-    Steal.lock = eg.Key
-    Tasks.Status("steal", "Target dipilih: " .. tostring(eg.Name))
-end
+-- ==== bangun kartu (row) ====
+local function spBuildRow(list, egg, rank, picked)
+    local rcol = spRarityColor(egg.RarityNum)
+    local row = spNew("TextButton", {
+        Size = UDim2.new(1, -6, 0, 46),
+        BackgroundColor3 = SP_CARD, BorderSizePixel = 0, Text = "",
+        AutoButtonColor = false, LayoutOrder = rank,
+    }, list)
+    spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, row)
+    spNew("UIStroke", { Color = SP_STROKE, Thickness = 1 }, row)
 
-local function stealNow(eg)
-    if not eg or not eg.Key then return end
-    StealPanel.selected = eg
-    Steal.lock = eg.Key
-    if Steal.busy then
-        Notify("Steal Panel", "Masih sibuk — target ini disimpan sebagai prioritas", 3)
-        return
+    -- rank / tanda antre
+    local rankText = picked and ("#" .. tostring(rank)) or tostring(rank)
+    spNew("TextLabel", {
+        Size = UDim2.new(0, 26, 1, 0), Position = UDim2.new(0, 6, 0, 0),
+        BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 11,
+        TextColor3 = picked and SP_GOLD or SP_DIM,
+        TextXAlignment = Enum.TextXAlignment.Left, Text = rankText,
+    }, row)
+
+    -- blok warna rarity sebagai "icon" (data icon asli tidak terpetakan 1:1)
+    local iconBlock = spNew("Frame", {
+        Size = UDim2.new(0, 30, 0, 30), Position = UDim2.new(0, 34, 0, 8),
+        BackgroundColor3 = rcol, BorderSizePixel = 0,
+    }, row)
+    spNew("UICorner", { CornerRadius = UDim.new(0, 8) }, iconBlock)
+
+    -- nama
+    local nameTxt = tostring(egg.Name or "?")
+    if egg.Kind == "Base" then nameTxt = nameTxt .. "  @" .. tostring(egg.OwnerName or "?") end
+    spNew("TextLabel", {
+        Size = UDim2.new(1, -236, 0, 22), Position = UDim2.new(0, 72, 0, 4),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 13,
+        TextColor3 = SP_TEXT, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, Text = nameTxt,
+    }, row)
+
+    -- value
+    spNew("TextLabel", {
+        Size = UDim2.new(0, 74, 0, 22), Position = UDim2.new(1, -160, 0, 4),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 12,
+        TextColor3 = SP_GREEN, TextXAlignment = Enum.TextXAlignment.Right,
+        Text = "$" .. fmtNum(egg.Value or 0) .. "/s",
+    }, row)
+
+    -- detail: rarity · area · mutasi · jarak
+    local dparts = { tostring(egg.RarityLabel or "?") }
+    if egg.Area and egg.Area ~= "" then dparts[#dparts + 1] = tostring(egg.Area) end
+    if type(egg.Mutations) == "table" and #egg.Mutations > 0 then
+        dparts[#dparts + 1] = table.concat(egg.Mutations, " ")
     end
-    Steal.busy = true
-    task.spawn(stealEgg, eg)
-end
+    if egg.Pos and Movement.Pos() then
+        dparts[#dparts + 1] = tostring(math.floor((egg.Pos - Movement.Pos()).Magnitude + 0.5)) .. "m"
+    end
+    if egg.Kind == "Halloween" then dparts[1] = "Halloween" end
+    spNew("TextLabel", {
+        Size = UDim2.new(1, -236, 0, 16), Position = UDim2.new(0, 72, 0, 26),
+        BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
+        TextColor3 = SP_DIM, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Text = table.concat(dparts, "  ·  "),
+    }, row)
 
-local function sortTargets(targets, mode)
-    local sorted = {}
-    for _, t in ipairs(targets) do sorted[#sorted + 1] = t end
-    if mode == "Highest Value" then
-        table.sort(sorted, function(a, b) return (a.Value or 0) > (b.Value or 0) end)
-    elseif mode == "Biggest Weight" then
-        table.sort(sorted, function(a, b) return (a.Scale or 1) > (b.Scale or 1) end)
-    elseif mode == "Nearest" then
-        table.sort(sorted, function(a, b) return (a.Dist or math.huge) < (b.Dist or math.huge) end)
-    else -- Best Rarity (default)
-        table.sort(sorted, function(a, b)
-            local ka = (a.RarityNum or 0) * 1e9 + (a.Value or 0)
-            local kb = (b.RarityNum or 0) * 1e9 + (b.Value or 0)
-            return ka > kb
+    -- tombol aksi kanan: ★ ▲ ▼ X (pola asli Star/Up/Down/Cancel)
+    local function actBtn(x, w, txt, col, cb)
+        local b = spNew("TextButton", {
+            Size = UDim2.new(0, w, 0, 24), Position = UDim2.new(1, x, 0, 11),
+            BackgroundColor3 = Color3.fromRGB(30, 36, 56), BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = col, Text = txt,
+        }, row)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+        P(function() b.Activated:Connect(function() spClick() cb() end) end)
+        return b
+    end
+    local key = egg.Key
+    actBtn(-88, 22, "▲", picked and SP_GOLD or SP_DIM, function()
+        Steal.MoveInPlan(key, -1)
+        StealPanel.Refresh()
+    end)
+    actBtn(-64, 22, "▼", picked and SP_GOLD or SP_DIM, function()
+        Steal.MoveInPlan(key, 1)
+        StealPanel.Refresh()
+    end)
+    local starBtn = actBtn(-40, 22, "★", picked and SP_GOLD or SP_DIM, function()
+        if picked then
+            Steal.Cancel(key)
+        else
+            Steal.Prioritize(key)
+        end
+        StealPanel.Refresh()
+    end)
+    actBtn(-16, 22, "X", SP_RED, function()
+        Steal.Cancel(key)
+        StealPanel.Refresh()
+    end)
+
+    -- klik baris = STEAL sekarang (pola StealNow)
+    P(function()
+        row.Activated:Connect(function()
+            spClick()
+            Steal.Now(key)
+            Tasks.Status("steal", "Steal now: " .. tostring(egg.Name))
+            StealPanel.Refresh()
         end)
-    end
-    return sorted
+    end)
+    return { row = row, starBtn = starBtn, key = key }
 end
 
-local function rebuildRows(sorted)
-    local list = StealPanel.list
-    if not list then return end
+-- ==== refresh isi daftar ====
+function StealPanel.Refresh()
+    if not (StealPanel.list and StealPanel.open) then return end
     for _, r in ipairs(StealPanel.rows) do
-        P(function() r.frame:Destroy() end)
+        P(function() r.row:Destroy() end)
     end
     StealPanel.rows = {}
-    local n = math.min(#sorted, 60)
-    for i = 1, n do
-        local eg = sorted[i]
-        local row = spNew("TextButton", {
-            Name = "Row",
-            Size = UDim2.new(1, -6, 0, 30),
-            BackgroundColor3 = SP_CARD,
-            BorderSizePixel = 0,
-            Text = "",
-            AutoButtonColor = false,
-        }, list)
-        spCorner(row, 5)
-
-        local disp = tostring(eg.Name)
-        if eg.Kind == "Base" then
-            disp = disp .. " @ " .. tostring(eg.OwnerName or "?")
-        elseif eg.Kind == "Halloween" then
-            disp = "[HW] " .. disp
-        elseif eg.Area and eg.Area ~= "" then
-            disp = disp .. "  [" .. tostring(eg.Area) .. "]"
-        end
-        if #disp > 30 then disp = disp:sub(1, 29) .. "..." end
-        local rnum = eg.RarityNum or 0
-
-        spNew("TextLabel", {
-            Size = UDim2.new(0, 30, 1, 0), Position = UDim2.new(0, 6, 0, 0),
-            BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-            TextSize = 11, TextColor3 = SP_DIM,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            Text = "#" .. i,
-        }, row)
-
-        spNew("TextLabel", {
-            Size = UDim2.new(1, -238, 1, 0), Position = UDim2.new(0, 40, 0, 0),
-            BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
-            TextSize = 12, TextColor3 = SP_TEXT,
-            TextXAlignment = Enum.TextXAlignment.Left,
-            TextTruncate = Enum.TextTruncate.AtEnd,
-            Text = disp,
-        }, row)
-
-        spNew("TextLabel", {
-            Size = UDim2.new(0, 52, 1, 0), Position = UDim2.new(1, -196, 0, 0),
-            BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-            TextSize = 10,
-            TextColor3 = rnum >= 5 and SP_GOLD or (rnum >= 3 and SP_ACCENT or SP_DIM),
-            TextXAlignment = Enum.TextXAlignment.Right,
-            Text = (eg.RarityLabel and eg.RarityLabel ~= "") and tostring(eg.RarityLabel) or "-",
-        }, row)
-
-        spNew("TextLabel", {
-            Size = UDim2.new(0, 54, 1, 0), Position = UDim2.new(1, -142, 0, 0),
-            BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-            TextSize = 10, TextColor3 = SP_ACCENT,
-            TextXAlignment = Enum.TextXAlignment.Right,
-            Text = fmtNum(eg.Value) .. "/s",
-        }, row)
-
-        local dst = spNew("TextLabel", {
-            Size = UDim2.new(0, 34, 1, 0), Position = UDim2.new(1, -84, 0, 0),
-            BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-            TextSize = 10, TextColor3 = SP_DIM,
-            TextXAlignment = Enum.TextXAlignment.Right,
-            Text = "?",
-        }, row)
-
-        local stealBtn = spNew("TextButton", {
-            Size = UDim2.new(0, 44, 0, 22), Position = UDim2.new(1, -46, 0, 4),
-            BackgroundColor3 = SP_ACCENT, BorderSizePixel = 0,
-            Font = Enum.Font.GothamBold, TextSize = 11,
-            TextColor3 = Color3.fromRGB(8, 12, 20), Text = "Steal",
-        }, row)
-        spCorner(stealBtn, 5)
-
-        P(function() stealBtn.Activated:Connect(function() stealNow(eg) end) end)
-        P(function() row.Activated:Connect(function() selectEgg(eg) end) end)
-
-        table.insert(StealPanel.rows, { frame = row, eg = eg, dst = dst })
-    end
-    P(function() list.CanvasSize = UDim2.new(0, 0, 0, #StealPanel.rows * 32 + 4) end)
-end
-
-function StealPanel.Update()
-    local root = StealPanel.root
-    if not root or not StealPanel.open then return end
 
     local targets = EggState.StealTargets()
-    local myRoot = Movement.Root()
-    local myPos = myRoot and myRoot.Position or nil
+    local byKey = {}
+    for _, t in ipairs(targets) do byKey[t.Key] = t end
 
-    -- bar status
-    if StealPanel.lblAuto then
-        StealPanel.lblAuto.Text = Steal.on and "Auto Steal: ON" or "Auto Steal: OFF"
-        StealPanel.lblAuto.BackgroundColor3 = Steal.on and SP_GOLD or SP_CARD
-        StealPanel.lblAuto.TextColor3 = Steal.on and SP_DARK or SP_DIM
-    end
-    if StealPanel.lblHw then
-        local hwEl = Config.Elements["admin/hwsteal"]
-        local hwOn = (hwEl and hwEl:Get() == true) or false
-        StealPanel.lblHw.Text = hwOn and "Halloween: ON" or "Halloween: OFF"
-        StealPanel.lblHw.BackgroundColor3 = hwOn and SP_GOLD or SP_CARD
-        StealPanel.lblHw.TextColor3 = hwOn and SP_DARK or SP_DIM
-    end
-
-    local liveKeys, nField, nBase, nHw = {}, 0, 0, 0
-    for _, t in ipairs(targets) do
-        liveKeys[t.Key] = true
-        if t.Kind == "Base" then
-            nBase = nBase + 1
-        elseif t.Kind == "Halloween" then
-            nHw = nHw + 1
-        else
-            nField = nField + 1
-        end
-        if myPos and t.Pos then
-            t.Dist = (t.Pos - myPos).Magnitude
-        else
-            t.Dist = nil
+    -- susun urutan: Plan() dulu (picks + saran), lalu sisa sesuai filter
+    local ordered, seen = {}, {}
+    local plan = Steal.Plan()
+    local pickedSet = {}
+    for _, k in ipairs(Steal.pick) do pickedSet[k] = true end
+    for _, k in ipairs(plan) do
+        local egg = byKey[k]
+        if egg then
+            local show = true
+            if StealPanel.filter == "Halloween" then show = egg.Kind == "Halloween" end
+            if StealPanel.filter == "Field" then show = egg.Kind ~= "Halloween" and egg.Kind ~= "Base" end
+            if show then
+                seen[k] = true
+                ordered[#ordered + 1] = { egg = egg, picked = pickedSet[k] ~= nil }
+            end
         end
     end
-    if StealPanel.lblEggs then
-        StealPanel.lblEggs.Text = string.format("Eggs: %d (F%d/H%d/B%d)",
-            #targets, nField, nHw, nBase)
+    if #ordered < 24 then
+        local sorted = StealPanelSortTargets(targets, Steal.priority)
+        for _, egg in ipairs(sorted) do
+            if #ordered >= 24 then break end
+            if not seen[egg.Key] then
+                local show = true
+                if StealPanel.filter == "Halloween" then show = egg.Kind == "Halloween" end
+                if StealPanel.filter == "Field" then show = egg.Kind ~= "Halloween" and egg.Kind ~= "Base" end
+                if show and egg.Kind ~= "Base" then
+                    seen[egg.Key] = true
+                    ordered[#ordered + 1] = { egg = egg, picked = false }
+                end
+            end
+        end
     end
+
+    for i, item in ipairs(ordered) do
+        local r = spBuildRow(StealPanel.list, item.egg, i, item.picked)
+        StealPanel.rows[#StealPanel.rows + 1] = r
+    end
+    P(function()
+        local n = #StealPanel.rows
+        StealPanel.list.CanvasSize = UDim2.new(0, 0, 0, n * 52 + 6)
+    end)
+
+    -- header sort label + status 3 tombol
     if StealPanel.lblSort then
-        StealPanel.lblSort.Text = "Sort: " .. tostring(StealPanel.sort)
+        P(function() StealPanel.lblSort.Text = "Sort: " .. tostring(Steal.priority) end)
     end
-    if StealPanel.lblNight then
-        local ct = tonumber(P(function() return Lighting.ClockTime end)) or 12
-        local night = ct >= 18 or ct < 6
-        StealPanel.lblNight.Text = night and "Night" or "Day"
-        StealPanel.lblNight.TextColor3 = night and SP_GOLD or SP_DIM
-    end
-
-    -- seleksi valid? (Key tetap ada di daftar target terbaru)
-    local sel = StealPanel.selected
-    if sel and not (liveKeys[sel.Key] or (sel.Model and sel.Model.Parent)) then
-        StealPanel.selected = nil
-        sel = nil
-    end
-    if Steal.lock and not liveKeys[Steal.lock] then
-        Steal.lock = nil
-    end
-    if StealPanel.lblSel then
-        if sel then
-            StealPanel.lblSel.Text = "Selected: " .. tostring(sel.Name)
-                .. (sel.Kind == "Base" and (" @ " .. tostring(sel.OwnerName or "?")) or "")
-        else
-            StealPanel.lblSel.Text = "Selected: none (klik baris di bawah untuk memilih)"
-        end
-    end
-
-    if StealPanel.collapsed then return end
-
-    local sorted = sortTargets(targets, StealPanel.sort)
-
-    -- bangun ulang hanya kalau komposisi berubah (hemat CPU)
-    local sigParts = {}
-    for _, t in ipairs(sorted) do
-        sigParts[#sigParts + 1] = tostring(t.Key) .. ":" .. tostring(t.Name)
-            .. ":" .. tostring(t.RarityNum)
-    end
-    local sig = table.concat(sigParts, "|")
-    if sig ~= StealPanel.sig then
-        StealPanel.sig = sig
-        rebuildRows(sorted)
-    end
-
-    -- update teks tiap baris (jarak berubah terus)
-    for _, r in ipairs(StealPanel.rows) do
-        local eg = r.eg
-        local alive = (eg.Model and eg.Model.Parent ~= nil) or liveKeys[eg.Key] == true
+    if StealPanel.rowSteal then
         P(function()
-            r.frame.Visible = alive and true or false
-            if not alive then return end
-            r.dst.Text = eg.Dist and (tostring(math.floor(eg.Dist + 0.5)) .. "m") or "?"
-            local isSel = StealPanel.selected and StealPanel.selected.Key == eg.Key
-            r.frame.BackgroundColor3 = isSel and SP_CARDH or SP_CARD
+            StealPanel.rowSteal.Text = Steal.on and "Steal ✓" or "Steal"
+            StealPanel.rowSteal.BackgroundColor3 = Steal.on
+                and Color3.fromRGB(30, 120, 40) or Color3.fromRGB(30, 36, 56)
+        end)
+    end
+    if StealPanel.rowHw then
+        P(function()
+            StealPanel.rowHw.Text = HWX.on and "HW ✓" or "HW"
+            StealPanel.rowHw.BackgroundColor3 = HWX.on
+                and Color3.fromRGB(96, 52, 160) or Color3.fromRGB(30, 36, 56)
+        end)
+    end
+    if StealPanel.rowFilter then
+        P(function()
+            StealPanel.rowFilter.Text = StealPanel.filter == "All" and "All"
+                or (StealPanel.filter == "Halloween" and "Halloween" or "Field")
         end)
     end
 end
 
+-- ==== buka/tutup + animasi slide ====
+function StealPanel.Show()
+    if not StealPanel.built then StealPanel.Build() end
+    if not StealPanel.root then return end
+    StealPanel.open = true
+    Config.Set("panel/open", true)
+    if type(Gill) == "table" then Gill.__THORHUB_PANEL_OPEN = true end
+    P(function()
+        StealPanel.panelGui.Enabled = true
+        local target = StealPanel.origPos or UDim2.new(1, -12, 0.5, 0)
+        local startPos
+        if StealPanel.mode == "own" then
+            startPos = UDim2.new(1, 60, 0.5, 0)
+        else
+            startPos = UDim2.new(target.X.Scale, target.X.Offset + 60,
+                target.Y.Scale, target.Y.Offset)
+        end
+        StealPanel.root.Position = startPos
+        local tw = TweenService:Create(StealPanel.root,
+            TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            { Position = target })
+        tw:Play()
+    end)
+    StealPanel.Refresh()
+end
+
+function StealPanel.Hide()
+    StealPanel.open = false
+    Config.Set("panel/open", false)
+    if type(Gill) == "table" then Gill.__THORHUB_PANEL_OPEN = nil end
+    if not (StealPanel.root) then return end
+    P(function()
+        local target = StealPanel.origPos or UDim2.new(1, -12, 0.5, 0)
+        local startPos
+        if StealPanel.mode == "own" then
+            startPos = UDim2.new(1, 60, 0.5, 0)
+        else
+            startPos = UDim2.new(target.X.Scale, target.X.Offset + 60,
+                target.Y.Scale, target.Y.Offset)
+        end
+        local tw = TweenService:Create(StealPanel.root,
+            TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+            { Position = startPos })
+        tw:Play()
+        task.delay(0.26, function()
+            if not StealPanel.open and StealPanel.panelGui then
+                StealPanel.panelGui.Enabled = false
+            end
+        end)
+    end)
+end
+
+function StealPanel.Toggle()
+    if StealPanel.open then StealPanel.Hide() else StealPanel.Show() end
+end
+
+function StealPanel.Sync()
+    StealPanel.Refresh()
+end
+
+-- ==== BUILD ====
 function StealPanel.Build()
     StealPanel.Destroy()
     destroyOldPanels()
 
-    local gui = spNew("ScreenGui", {
-        Name = "ThorHubStealPanel", ResetOnSpawn = false, DisplayOrder = 55,
-    })
-    local parent = nil
-    if gethui then parent = P(gethui) end
-    if not parent and LocalPlayer then
-        parent = P(function() return LocalPlayer:FindFirstChild("PlayerGui") end)
-    end
-    if parent then P(function() gui.Parent = parent end) end
-    StealPanel.gui = gui
+    local hud = spFindGameHud()
 
-    local root = spNew("Frame", {
-        Name = "Root", Size = UDim2.new(0, 360, 0, 438),
-        BackgroundColor3 = SP_BG, BorderSizePixel = 0, Active = true,
-    }, gui)
-    spCorner(root, 10)
-    spStroke(root)
+    -- ---------- 1) tombol toggle melayang (kloning tombol Pets game) ----------
+    local btnGui = spNew("ScreenGui", {
+        ResetOnSpawn = false, DisplayOrder = 55, Name = spRandName(),
+    })
+    if gethui then
+        P(function() btnGui.Parent = gethui() end)
+    else
+        P(function() btnGui.Parent = LocalPlayer:FindFirstChildOfClass("PlayerGui") end)
+    end
+    StealPanel.btnGui = btnGui
+
+    local btn = nil
+    if hud then
+        local clone = spClone(hud.Pets)
+        if clone then
+            -- buang anak notifikasi/gameinfo (pola asli), ganti label + gradien
+            for _, d in ipairs(clone:GetChildren()) do
+                local n = tostring(d.Name)
+                if n == "Notification" or n == "ReadyNotification" or n == "NightImage"
+                    or n == "NightText" or n == "ConsoleButton" or n == "Badge" then
+                    P(function() d:Destroy() end)
+                end
+            end
+            P(function()
+                clone.Visible = true
+                clone.AnchorPoint = Vector2.new(0.5, 0.5)
+                clone.Parent = btnGui
+            end)
+            local lbl = P(function()
+                return clone:FindFirstChild("Label") or clone:FindFirstChildOfClass("TextLabel")
+            end)
+            if lbl then P(function() lbl.Text = "Steal" end) end
+            local grad = P(function() return clone:FindFirstChildOfClass("UIGradient") end)
+            if grad then
+                P(function()
+                    grad.Color = SP_Theme.Toggle.Color
+                    grad.Rotation = SP_Theme.Toggle.Rotation
+                end)
+            else
+                P(function()
+                    local g = Instance.new("UIGradient")
+                    g.Color = SP_Theme.Toggle.Color
+                    g.Rotation = SP_Theme.Toggle.Rotation
+                    g.Parent = clone
+                end)
+            end
+            btn = clone
+            StealPanel.mode = "hijack"
+        end
+    end
+    if not btn then
+        -- fallback: tombol mandiri bergaya sama (ikon petir ThorHub)
+        btn = spNew("TextButton", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 64, 0, 64),
+            BackgroundColor3 = Color3.fromRGB(132, 74, 255),
+            Text = "⚡", TextSize = 28, Font = Enum.Font.GothamBold,
+            TextColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0,
+        }, btnGui)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 16) }, btn)
+        spNew("UIGradient", { Color = SP_Theme.Toggle.Color, Rotation = SP_Theme.Toggle.Rotation }, btn)
+        spNew("UIStroke", { Color = SP_Theme.Toggle.Stroke, Thickness = 2 }, btn)
+    end
+    StealPanel.btn = btn
+    P(function()
+        btn.Activated:Connect(function()
+            spClick()
+            StealPanel.Toggle()
+        end)
+    end)
+
+    -- ikuti posisi kolom tombol Eggs game (pola vT asli: mirror posisi kolom)
+    if hud and StealPanel.mode == "hijack" then
+        local conn = P(function()
+            return RunService.RenderStepped:Connect(function()
+                if not (btn and btn.Parent and hud.Eggs and hud.Eggs.Parent) then return end
+                local ePos = hud.Eggs.AbsolutePosition
+                local eSize = hud.Eggs.AbsoluteSize
+                local gPos = btnGui.AbsolutePosition
+                local rel = UDim2.new(0, ePos.X - gPos.X + eSize.X / 2,
+                    0, ePos.Y - gPos.Y + eSize.Y * 1.5 + 8)
+                if btn.Position ~= rel then btn.Position = rel end
+            end)
+        end)
+        if conn then StealPanel.hudConns[#StealPanel.hudConns + 1] = conn end
+    else
+        P(function()
+            btn.Position = UDim2.new(0.5, 0, 0, 80)
+        end)
+    end
+
+    -- ---------- 2) panel (kloning frame ActivePets game) ----------
+    local panelGui = spNew("ScreenGui", {
+        ResetOnSpawn = false, DisplayOrder = 56, Name = spRandName(), Enabled = false,
+    })
+    if gethui then
+        P(function() panelGui.Parent = gethui() end)
+    else
+        P(function() panelGui.Parent = LocalPlayer:FindFirstChildOfClass("PlayerGui") end)
+    end
+    StealPanel.panelGui = panelGui
+
+    local root, list, title, closeBtn
+    if hud then
+        local frame = spClone(hud.ActivePetsFrame)
+        if frame then
+            P(function() frame.Parent = panelGui end)
+            spRename(frame)
+            root = frame
+            -- simpan posisi asli frame game (untuk animasi slide)
+            StealPanel.origPos = P(function() return frame.Position end)
+            -- hanya pertahankan Header / ScrollingFrame / Close; buang sisanya
+            P(function()
+                for _, d in ipairs(frame:GetChildren()) do
+                    local n = tostring(d.Name)
+                    if n ~= "Header" and n ~= "ScrollingFrame" and n ~= "Close" then
+                        d:Destroy()
+                    end
+                end
+            end)
+            -- ganti judul header jadi "Steal Panel"
+            local header = P(function() return frame:FindFirstChild("Header")
+                or frame:FindFirstChildOfClass("Frame") end)
+            if header then
+                local lbl = P(function()
+                    return header:FindFirstChild("Title")
+                        or header:FindFirstChildOfClass("TextLabel")
+                end)
+                if lbl then
+                    P(function() lbl.Text = "Steal Panel" end)
+                    StealPanel.lblTitle = lbl
+                end
+            end
+            -- tutup tombol ">"
+            local close = P(function() return frame:FindFirstChild("Close") end)
+            if close then
+                local cl = P(function() return close:FindFirstChildOfClass("TextLabel")
+                    or close:FindFirstChild("Label") end)
+                if cl then P(function() cl.Text = ">" end) end
+                P(function()
+                    close.Activated:Connect(function()
+                        spClick() StealPanel.Hide()
+                    end)
+                end)
+                closeBtn = close
+            end
+            -- area daftar: ScrollingFrame game bila ada
+            list = P(function() return frame:FindFirstChild("ScrollingFrame") end)
+            if list then
+                P(function()
+                    for _, d in ipairs(list:GetChildren()) do
+                        if d:IsA("GuiObject") then d:Destroy() end
+                    end
+                end)
+            end
+        end
+    end
+    if not root then
+        -- ---------- fallback: panel mandiri layout sama ----------
+        StealPanel.mode = "own"
+        root = spNew("Frame", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Size = UDim2.new(0, 340, 0, 460),
+            BackgroundColor3 = SP_BG, BorderSizePixel = 0, Active = true,
+        }, panelGui)
+        StealPanel.origPos = UDim2.new(1, -12, 0.5, 0)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 10) }, root)
+        spNew("UIStroke", { Color = SP_STROKE, Thickness = 1 }, root)
+        local header = spNew("Frame", {
+            Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = SP_CARD,
+            BorderSizePixel = 0,
+        }, root)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 10) }, header)
+        local lbl = spNew("TextLabel", {
+            Size = UDim2.new(1, -80, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+            BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 15,
+            TextColor3 = SP_TEXT, TextXAlignment = Enum.TextXAlignment.Left,
+            Text = "Steal Panel",
+        }, header)
+        StealPanel.lblTitle = lbl
+        closeBtn = spNew("TextButton", {
+            Size = UDim2.new(0, 30, 0, 26), Position = UDim2.new(1, -36, 0, 6),
+            BackgroundColor3 = Color3.fromRGB(30, 36, 56), Text = ">",
+            Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = SP_DIM,
+            BorderSizePixel = 0,
+        }, header)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, closeBtn)
+        P(function()
+            closeBtn.Activated:Connect(function()
+                spClick() StealPanel.Hide()
+            end)
+        end)
+    end
     StealPanel.root = root
 
-    local pos = Config.Get("panel/pos")
-    if type(pos) ~= "table" and Gill then pos = Gill.__THORHUB_PANEL_POS end
-    if type(pos) == "table" and tonumber(pos.x) and tonumber(pos.y) then
-        root.Position = UDim2.new(0, pos.x, 0, pos.y)
+    -- ---------- 3) bar header panel: Sort + 3 tombol (Steal/HW/Filter) ----------
+    local topRow = spNew("Frame", {
+        Size = UDim2.new(1, -16, 0, 30), Position = UDim2.new(0, 8, 0, 42),
+        BackgroundTransparency = 1,
+    }, root)
+    local topLayout = spNew("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6),
+    }, topRow)
+
+    local function topBtn(order, w, txt, cb)
+        local b = spNew("TextButton", {
+            Size = UDim2.new(0, w, 1, 0), BackgroundColor3 = Color3.fromRGB(30, 36, 56),
+            BorderSizePixel = 0, Font = Enum.Font.GothamBold, TextSize = 12,
+            TextColor3 = SP_TEXT, Text = txt, LayoutOrder = order,
+        }, topRow)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+        P(function() b.Activated:Connect(function() spClick() cb() end) end)
+        return b
+    end
+
+    -- tombol Sort (siklus prioritas — sync elemen menu Farm > Auto Steal > Steal Priority)
+    local sortBtn = topBtn(1, 118, "Sort: " .. tostring(Steal.priority), function()
+        local idx = table.find(StealPanel.SORTS, Steal.priority) or 4
+        local nxt = StealPanel.SORTS[idx % #StealPanel.SORTS + 1]
+        Steal.priority = nxt
+        local el = Config.Elements["farm/priority"]
+        if el and el.Set then P(function() el:Set(nxt, true) end) end
+        StealPanel.Refresh()
+    end)
+    StealPanel.lblSort = sortBtn
+
+    -- tombol Steal (sync Auto Steal menu)
+    StealPanel.rowSteal = topBtn(2, 64, "Steal", function()
+        local el = Config.Elements["farm/steal"]
+        local newVal = not Steal.on
+        Steal.on = newVal
+        if el and el.Set then P(function() el:Set(newVal, true) end) end
+        if newVal then Tasks.Wake("steal") end
+        StealPanel.Refresh()
+    end)
+
+    -- tombol HW (sync Auto Steal Halloween Eggs)
+    StealPanel.rowHw = topBtn(3, 48, "HW", function()
+        local el = Config.Elements["admin/hwsteal"]
+        local newVal = not HWX.on
+        HWX.on = newVal
+        if el and el.Set then P(function() el:Set(newVal, true) end) end
+        StealPanel.Refresh()
+    end)
+
+    -- tombol filter All/Halloween/Field (pola M4 asli)
+    StealPanel.rowFilter = topBtn(4, 72, StealPanel.filter, function()
+        StealPanel.filter = (StealPanel.filter == "All" and "Halloween")
+            or (StealPanel.filter == "Halloween" and "Field") or "All"
+        StealPanel.Refresh()
+    end)
+
+    -- ---------- 4) daftar kartu ----------
+    if not list then
+        list = spNew("ScrollingFrame", {
+            Size = UDim2.new(1, -16, 1, -86), Position = UDim2.new(0, 8, 0, 78),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 4, CanvasSize = UDim2.new(0, 0, 0, 0),
+        }, root)
+        spNew("UIListLayout", {
+            Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+        }, list)
+        spNew("UIPadding", { PaddingTop = UDim.new(0, 2) }, list)
     else
-        root.Position = UDim2.new(0, 14, 0.5, -219)
-    end
-
-    -- == header (drag handle) ==
-    local header = spNew("Frame", {
-        Size = UDim2.new(1, 0, 0, 34), BackgroundTransparency = 1,
-    }, root)
-
-    spNew("TextLabel", {
-        Size = UDim2.new(1, -76, 1, 0), Position = UDim2.new(0, 12, 0, 0),
-        BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
-        TextSize = 14, TextColor3 = SP_TEXT,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = "Steal Panel",
-    }, header)
-
-    local collapseBtn = spNew("TextButton", {
-        Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -60, 0, 4),
-        BackgroundColor3 = SP_CARD, BorderSizePixel = 0,
-        Font = Enum.Font.GothamBold, TextSize = 14,
-        TextColor3 = SP_DIM, Text = "-",
-    }, header)
-    spCorner(collapseBtn, 6)
-
-    local closeBtn = spNew("TextButton", {
-        Size = UDim2.new(0, 26, 0, 26), Position = UDim2.new(1, -30, 0, 4),
-        BackgroundColor3 = SP_CARD, BorderSizePixel = 0,
-        Font = Enum.Font.GothamBold, TextSize = 14,
-        TextColor3 = SP_DIM, Text = "x",
-    }, header)
-    spCorner(closeBtn, 6)
-
-    -- == bar status ==
-    local rowA = spNew("Frame", {
-        Size = UDim2.new(1, -12, 0, 26), Position = UDim2.new(0, 6, 0, 38),
-        BackgroundTransparency = 1,
-    }, root)
-
-    local lblAuto = spNew("TextButton", {
-        Size = UDim2.new(0, 112, 1, 0), Position = UDim2.new(0, 0, 0, 0),
-        BackgroundColor3 = SP_CARD, BorderSizePixel = 0, AutoButtonColor = false,
-        Font = Enum.Font.GothamBold, TextSize = 10,
-        TextColor3 = SP_DIM, Text = "Auto Steal: OFF",
-    }, rowA)
-    spCorner(lblAuto, 6)
-    spStroke(lblAuto)
-    StealPanel.lblAuto = lblAuto
-
-    local lblHw = spNew("TextButton", {
-        Size = UDim2.new(0, 96, 1, 0), Position = UDim2.new(0, 118, 0, 0),
-        BackgroundColor3 = SP_CARD, BorderSizePixel = 0, AutoButtonColor = false,
-        Font = Enum.Font.GothamBold, TextSize = 10,
-        TextColor3 = SP_DIM, Text = "Halloween: OFF",
-    }, rowA)
-    spCorner(lblHw, 6)
-    spStroke(lblHw)
-    StealPanel.lblHw = lblHw
-
-    local lblEggs = spNew("TextLabel", {
-        Size = UDim2.new(0, 128, 1, 0), Position = UDim2.new(1, -128, 0, 0),
-        BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-        TextSize = 10, TextColor3 = SP_DIM,
-        TextXAlignment = Enum.TextXAlignment.Right,
-        Text = "Eggs: 0",
-    }, rowA)
-    StealPanel.lblEggs = lblEggs
-
-    -- == bar kontrol ==
-    local rowB = spNew("Frame", {
-        Size = UDim2.new(1, -12, 0, 24), Position = UDim2.new(0, 6, 0, 68),
-        BackgroundTransparency = 1,
-    }, root)
-
-    local lblSort = spNew("TextButton", {
-        Size = UDim2.new(0, 150, 1, 0), Position = UDim2.new(0, 0, 0, 0),
-        BackgroundColor3 = SP_CARD, BorderSizePixel = 0, AutoButtonColor = false,
-        Font = Enum.Font.Gotham, TextSize = 11,
-        TextColor3 = SP_TEXT, Text = "Sort: Best Rarity",
-    }, rowB)
-    spCorner(lblSort, 6)
-    spStroke(lblSort)
-    StealPanel.lblSort = lblSort
-
-    local lblNight = spNew("TextLabel", {
-        Size = UDim2.new(0, 60, 1, 0), Position = UDim2.new(1, -60, 0, 0),
-        BackgroundTransparency = 1, Font = Enum.Font.GothamBold,
-        TextSize = 11, TextColor3 = SP_DIM,
-        TextXAlignment = Enum.TextXAlignment.Right, Text = "Day",
-    }, rowB)
-    StealPanel.lblNight = lblNight
-
-    -- == baris "selected" ==
-    local lblSel = spNew("TextButton", {
-        Size = UDim2.new(1, -12, 0, 22), Position = UDim2.new(0, 6, 0, 96),
-        BackgroundColor3 = SP_CARD, BorderSizePixel = 0, AutoButtonColor = false,
-        Font = Enum.Font.Gotham, TextSize = 10,
-        TextColor3 = SP_ACCENT,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = "Selected: none (klik baris di bawah untuk memilih)",
-    }, root)
-    spCorner(lblSel, 6)
-    StealPanel.lblSel = lblSel
-
-    -- == daftar ==
-    local list = spNew("ScrollingFrame", {
-        Size = UDim2.new(1, -12, 0, 292), Position = UDim2.new(0, 6, 0, 122),
-        BackgroundTransparency = 1, BorderSizePixel = 0,
-        ScrollBarThickness = 4, CanvasSize = UDim2.new(0, 0, 0, 0),
-    }, root)
-    StealPanel.list = list
-    spNew("UIListLayout", { Padding = UDim.new(0, 2) }, list)
-
-    -- == footer ==
-    local hint = spNew("TextLabel", {
-        Size = UDim2.new(1, -12, 0, 16), Position = UDim2.new(0, 6, 1, -20),
-        BackgroundTransparency = 1, Font = Enum.Font.Gotham,
-        TextSize = 9, TextColor3 = SP_DIM,
-        TextXAlignment = Enum.TextXAlignment.Left,
-        Text = "Klik baris: pilih target  |  Steal: curi sekarang  |  geser dari header",
-    }, root)
-
-    StealPanel.body = { rowA, rowB, lblSel, list, hint }
-
-    -- == interaksi ==
-
-    local function applyCollapsed(state)
-        StealPanel.collapsed = state
-        Config.Set("panel/collapsed", state)
+        -- samakan tata letak list bila memakai frame game (posisi topRow baru)
         P(function()
-            collapseBtn.Text = state and "+" or "-"
-            root.Size = state and UDim2.new(0, 360, 0, 38) or UDim2.new(0, 360, 0, 438)
-            for _, b in ipairs(StealPanel.body) do b.Visible = not state end
+            list.Position = UDim2.new(0, 8, 0, 78)
+            list.Size = UDim2.new(1, -16, 1, -86)
+            list.BackgroundTransparency = 1
+            list.ScrollBarThickness = 4
+            for _, d in ipairs(list:GetChildren()) do
+                if d:IsA("UIListLayout") or d:IsA("UIPadding") then d:Destroy() end
+            end
+            local lay = Instance.new("UIListLayout")
+            lay.Padding = UDim.new(0, 6)
+            lay.SortOrder = Enum.SortOrder.LayoutOrder
+            lay.Parent = list
         end)
     end
-
-    P(function()
-        collapseBtn.Activated:Connect(function() applyCollapsed(not StealPanel.collapsed) end)
-    end)
-    P(function()
-        closeBtn.Activated:Connect(function() StealPanel.Hide() end)
-    end)
-    P(function()
-        lblAuto.Activated:Connect(function()
-            local el = Config.Elements["farm/steal"]
-            if el then el:Set(not el:Get()) end
-        end)
-    end)
-    P(function()
-        lblHw.Activated:Connect(function()
-            local el = Config.Elements["admin/hwsteal"]
-            if el then el:Set(not el:Get()) end
-        end)
-    end)
-    P(function()
-        lblSort.Activated:Connect(function()
-            local modes = StealPanel.SORTS
-            local idx = 1
-            for i, m in ipairs(modes) do
-                if m == StealPanel.sort then idx = i break end
-            end
-            StealPanel.sort = modes[(idx % #modes) + 1]
-            StealPanel.sig = "" -- paksa rebuild dengan urutan baru
-        end)
-    end)
-    P(function()
-        lblSel.Activated:Connect(function()
-            StealPanel.selected = nil
-            Steal.lock = nil
-        end)
-    end)
-
-    -- == drag (mouse & sentuhan) ==
-    local dragging, dragStart, startPos = false, nil, nil
-
-    local function savePos()
-        local p = root.Position
-        local saved = {
-            x = P(function() return p.X.Offset end),
-            y = P(function() return p.Y.Offset end),
-        }
-        Config.Set("panel/pos", saved)
-        if Gill then Gill.__THORHUB_PANEL_POS = saved end
-    end
-
-    local function clampPos(pos)
-        local cam = P(function() return workspace.CurrentCamera end)
-        local vp = cam and P(function() return cam.ViewportSize end) or nil
-        if not vp then return pos end
-        local as = P(function() return root.AbsoluteSize end)
-        local sx = as and as.X or 360
-        local sy = as and as.Y or 438
-        local ox = math.clamp(pos.X.Offset, 4, math.max(vp.X - sx - 4, 4))
-        local oy = math.clamp(pos.Y.Offset, 4, math.max(vp.Y - sy - 4, 4))
-        return UDim2.new(0, ox, 0, oy)
-    end
-
-    local c1 = P(function()
-        return header.InputBegan:Connect(function(input)
-            if input.UserInputType == Enum.UserInputType.MouseButton1
-                or input.UserInputType == Enum.UserInputType.Touch then
-                dragging = true
-                dragStart = input.Position
-                startPos = root.Position
-            end
-        end)
-    end)
-    if c1 then table.insert(StealPanel.conns, c1) end
-
-    local c2 = P(function()
-        return UserInputService.InputChanged:Connect(function(input)
-            if not dragging then return end
-            if input.UserInputType == Enum.UserInputType.MouseMovement
-                or input.UserInputType == Enum.UserInputType.Touch then
-                local delta = input.Position - dragStart
-                root.Position = clampPos(UDim2.new(
-                    startPos.X.Scale, startPos.X.Offset + delta.X,
-                    startPos.Y.Scale, startPos.Y.Offset + delta.Y))
-            end
-        end)
-    end)
-    if c2 then table.insert(StealPanel.conns, c2) end
-
-    local c3 = P(function()
-        return UserInputService.InputEnded:Connect(function(input)
-            if dragging and (input.UserInputType == Enum.UserInputType.MouseButton1
-                or input.UserInputType == Enum.UserInputType.Touch) then
-                dragging = false
-                savePos()
-            end
-        end)
-    end)
-    if c3 then table.insert(StealPanel.conns, c3) end
-
-    if Config.Get("panel/collapsed") == true then
-        applyCollapsed(true)
-    end
-
+    StealPanel.list = list
     StealPanel.built = true
-    P(StealPanel.Update)
 end
 
-function StealPanel.Show()
-    if StealPanel.open and StealPanel.root then return end
-    if not StealPanel.built or not StealPanel.root then
-        StealPanel.Build()
-    end
-    if StealPanel.root then
-        P(function() StealPanel.root.Visible = true end)
-        StealPanel.open = true
-        Config.Set("panel/open", true)
-        if Gill then Gill.__THORHUB_PANEL_OPEN = true end
-        P(StealPanel.Update)
-    end
-end
-
-function StealPanel.Hide()
-    if StealPanel.root then
-        P(function() StealPanel.root.Visible = false end)
-    end
-    StealPanel.open = false
-    Config.Set("panel/open", false)
-    if Gill then Gill.__THORHUB_PANEL_OPEN = false end
-end
-
--- updater panel: sekali per detik, ikut dispatcher (anti memory-leak)
-Tasks.Add("stealpanel", 1.0, function()
-    if not StealPanel.open then return end
-    P(StealPanel.Update)
+-- refresh berkala saat terbuka (murah — hanya saat open)
+Tasks.Add("stealpanel", 0.6, function()
+    if StealPanel.open then StealPanel.Refresh() end
 end)
+
+-- pulihkan status terbuka (pola RestoreStealPanel asli)
+function StealPanel.Restore()
+    local saved = Config.Get("panel/open")
+    if saved == nil and type(Gill) == "table" then
+        saved = Gill.__THORHUB_PANEL_OPEN
+    end
+    if saved ~= false then
+        StealPanel.Show()
+        print("[ThorHub] 2 UI aktif: menu utama + Steal Panel (ala kode baru)")
+    end
+end
+
 --════════════ BAGIAN 6 — MENU THORUI (TAB FARM) ════════════
 --────────────────────────────[ THORUI LOADER ]────────────────────────────
 -- ThorUI adalah GLOBAL: fungsi Notify (bagian awal) membacanya.
@@ -11445,213 +13179,751 @@ do
 end
 local areaNames = Repo.AreaNames()
 
---══════════════════════════ TAB 1: FARM ══════════════════════════
+--══════════════════════════ MENU (8 TAB — PERSIS KODE BARU) ══════════════════════════
+-- Registry tab/section dipetakan 1:1 dari kode baru:
+--   Farm | Event | Admin Abuse | Player | Predictor | Server | Misc | Auto Hop
+-- (tab promo "Discord" & "Venyx" milik script asli TIDAK disertakan.)
+
+local rarityAny = { "Any" }
+for _, r in ipairs(Repo.RarityOrder) do table.insert(rarityAny, r) end
+local function rarityNumAny(label)
+    if type(label) ~= "string" or label == "Any" then return 0 end
+    return Repo.Rarity[label] or 0
+end
+
+-- daftar mutasi kode baru (tampilan -> id item consumable asli)
+local MUT_DISPLAY = { "Fractured", "Scrambled", "Enchanted", "Nitro", "Spectral" }
+local MUT_TO_ID = { Fractured = "Boss", Scrambled = "Scrambled",
+                    Enchanted = "Enchanted", Nitro = "Nitro", Spectral = "Spectral" }
+
+local BUTTER_LIST = { "Radiant Butterfly", "Amethyst Butterfly",
+                      "Sapphire Butterfly", "Emerald Butterfly" }
+local BUTTER_TO_ID = { ["Radiant Butterfly"] = "Golden", ["Amethyst Butterfly"] = "Purple",
+                       ["Sapphire Butterfly"] = "Blue", ["Emerald Butterfly"] = "Green" }
+
+local HW_RARITIES = { "Epic", "Legendary", "Mythic", "Cosmic", "Secret", "Eternal", "Divine" }
+local HW_MONS = { "Candy Corn (+12 Candy)", "Hollow Bat (+12 Candy)", "Scarecrow (+28 Candy)",
+                 "Chest Mimic (+28 Candy)", "Pumpkin Golem (+65 Candy)", "Soul Phantom (+65 Candy)" }
+
+local playerNames = {}
+local function refreshPlayerNames()
+    playerNames = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LocalPlayer then table.insert(playerNames, tostring(p.Name)) end
+    end
+    if #playerNames == 0 then playerNames = { "(tidak ada pemain)" } end
+end
+refreshPlayerNames()
+
+-- glue task: Halloween Status + pengambilan egg Halloween dari holder
+Tasks.Add("hwstatus", 2.0, function()
+    if not HWX.on then
+        Tasks.Status("hwstatus", "Off")
+        return
+    end
+    local eggs = EggState.HalloweenEggs()
+    local txt = tostring(#eggs) .. " Halloween egg(s) visible"
+    if HWX.holders then
+        for _, plr in ipairs(Players:GetPlayers()) do
+            if plr ~= LocalPlayer then
+                local tool = P(function()
+                    local ch = plr.Character
+                    return ch and ch:FindFirstChildOfClass("Tool")
+                end)
+                local hwUid = tool and P(function()
+                    return tool:GetAttribute("HalloweenEggUid")
+                        or tool:GetAttribute("EggUid") or tool:GetAttribute("UID")
+                end)
+                if hwUid then
+                    txt = txt .. "  |  held by " .. tostring(plr.DisplayName)
+                    if not Steal.busy then
+                        local root = Movement.Root()
+                        local tPos = root and P(function()
+                            return plr.Character and plr.Character
+                                :FindFirstChild("HumanoidRootPart").Position
+                        end)
+                        if root and tPos then
+                            P(function() root.CFrame = CFrame.new(tPos + Vector3.new(0, 2, 0)) end)
+                            local prompt = P(function()
+                                return tool:FindFirstChildOfClass("ProximityPrompt", true)
+                            end)
+                            if prompt then P(function() firePromptInstance(prompt) end) end
+                        end
+                    end
+                    break
+                end
+            end
+        end
+    end
+    Tasks.Status("hwstatus", txt)
+end)
+
+-- glue task: Task Queue (section Priority) — ringkasan tugas aktif
+Tasks.Add("prioqueue", 2.0, function()
+    local on = {}
+    local checks = {
+        { "steal", function() return Steal.on end },
+        { "mutate", function() return Mutate.on end },
+        { "place", function() return Place.on end },
+        { "hatch", function() return Hatch.on end },
+        { "sell", function() return Sell.petOn or Sell.eggOn end },
+        { "fuse", function() return Fuse.on end },
+        { "favorite", function() return Fav.on end },
+        { "shooting star", function() return Star.on end },
+        { "butterflies", function() return Butter.on end },
+        { "wisp", function() return Wisp.on end },
+        { "banjo", function() return Banjo.on end },
+        { "auto hop", function() return AutoHop.on end },
+        { "treadmill", function() return Tread.on or Tread.upgrade end },
+        { "progress", function()
+            return Progress.upBase or Progress.claimCash or Progress.claimIndex
+                or Progress.buyTrail end },
+        { "capture", function() return Capture.on end },
+        { "minigame", function() return Minigame.on end },
+        { "hollow", function() return Hollow.on end },
+        { "phantom express", function() return Express.on end },
+        { "monsters", function() return HwMon.on end },
+        { "pumpkin", function() return HwPump.on or PBoss.on end },
+        { "ghost dog", function() return HwDog.on end },
+        { "fishing", function() return HwFish.on end },
+        { "rotation", function() return Rotation.on end },
+        { "combat", function() return Combat.on end },
+        { "island wars", function() return CIW.on end },
+    }
+    for _, c in ipairs(checks) do
+        local ok, active = pcall(c[2])
+        if ok and active then on[#on + 1] = c[1] end
+    end
+    Tasks.Status("prioqueue", #on > 0
+        and ("Active: " .. table.concat(on, ", "))
+        or ("Idle  |  " .. #checks .. " task slot"))
+end)
+
+-- glue task: Inventory Values (tambahan di HUD FPS/Ping)
+Tasks.Add("invval", 3.0, function()
+    if not (ESP.invValues and Perf.hud) then return end
+    local total = 0
+    for _, e in pairs(EggState.OwnEggs()) do
+        total = total + (Repo.EggValue(e.AssetCategory, e.AssetScale or 1, e.Mutations or {}) or 0)
+    end
+    P(function()
+        local lbl = Perf.hud:FindFirstChildOfClass("TextLabel")
+        if lbl then
+            local base = string.gsub(lbl.Text, "  |  Inv .*", "")
+            lbl.Text = base .. "  |  Inv $" .. fmtNum(total) .. "/s"
+        end
+    end)
+end)
+
+--══════════════════════════ TAB: FARM ══════════════════════════
 local FarmTab = Window:CreateTab({ Name = "Farm", Icon = "⚡" })
 
+-- ── Auto Steal ──
 mkSection(FarmTab, "Auto Steal")
 mkToggle(FarmTab, "farm/steal", "Auto Steal", false, function(v)
     Steal.on = v
     Tasks.Wake("steal")
-    if v and StealPanel.autoOpen then StealPanel.Show() end
 end)
-mkMulti(FarmTab, "farm/areas", "Target Areas", areaNames, function(l) Steal.areas = listToSet(l) end)
-mkDropdown(FarmTab, "farm/minrarity", "Min Rarity", rarityChoices, "Off",
-    function(v) Steal.minRarity = rarityNumFromLabel(v) end)
+local deliveryEl = mkDropdown(FarmTab, "farm/delivery", "Delivery",
+    { "Tween", "Instant Steps", "Fast Tween" }, "Tween",
+    function(v) Steal.delivery = v end)
+local delSpeedEl = mkSlider(FarmTab, "farm/delspeed", "Delivery Speed", 80, 110, 100, 1, "%",
+    function(v) Steal.carryK = v / 100 end)
+local stepCountEl = mkSlider(FarmTab, "farm/steps", "Step Count", 1, 6, 3, 1, "",
+    function(v) Steal.instantSteps = v end)
+local fastTweenEl = mkSlider(FarmTab, "farm/fasttween", "Fast Tween Speed", 3000, 4500, 3300, 50, "",
+    function(v) Steal.pullSpeed = v end)
+P(function()
+    if delSpeedEl.SetDependency then
+        delSpeedEl:SetDependency({ Element = deliveryEl, Value = "Tween" })
+        stepCountEl:SetDependency({ Element = deliveryEl, Value = "Instant Steps" })
+        fastTweenEl:SetDependency({ Element = deliveryEl, Value = "Fast Tween" })
+    end
+end)
+mkMulti(FarmTab, "farm/areas", "Target Areas", areaNames, function(l) Steal.areas = listToSet(l) end, nil, areaNames)
+mkDropdown(FarmTab, "farm/minrarity", "Min Rarity", rarityAny, "Any",
+    function(v) Steal.minRarity = rarityNumAny(v) end)
 mkSlider(FarmTab, "farm/minvalue", "Min Steal Value", 0, 100000, 0, 500, "/s",
     function(v) Steal.minValue = v end)
 mkMulti(FarmTab, "farm/specific", "Target Specific Eggs", eggSpecies, function(l) Steal.specific = listToSet(l) end)
 mkToggle(FarmTab, "farm/missing", "Steal Missing Index Eggs", false, function(v) Steal.missingIndex = v end)
 mkToggle(FarmTab, "farm/dropsafe", "Drop Eggs At Safe Zone", false, function(v) Steal.dropSafe = v end)
+mkToggle(FarmTab, "farm/agpanel", "Anti Guard Panel", true, function(v) Steal.agPanel = v end)
 mkDropdown(FarmTab, "farm/priority", "Steal Priority",
     { "Best Rarity", "Biggest Weight", "Best Mutation", "Highest Value", "Lowest Value" },
-    "Best Rarity", function(v) Steal.priority = v end)
-mkSlider(FarmTab, "farm/tweenspeed", "Tween Speed", 50, 120, 100, 5, "", function(v) Steal.tweenSpeed = v end)
-mkSlider(FarmTab, "farm/carryspeed", "Carry Speed", 80, 120, 100, 5, "", function(v) Steal.carrySpeed = v end)
--- keluarga metode Instant Steal (pola SafeCarry script asli):
--- V1 antar steps / Fast Delivery, V2 fast tween (zona terbatas),
--- V3 rantai teleport lewat Star Handler / Admin Treadmill.
-mkToggle(FarmTab, "farm/instant", "Instant Steal", false, function(v) Steal.instant = v end,
-    "Delivers the egg to the safe zone in a few seconds, needs enough Speed")
-mkSlider(FarmTab, "farm/instantsteps", "Instant Steal Steps", 1, 6, 3, 1, "",
-    function(v) Steal.instantSteps = v end,
-    "Higher is safer but takes longer")
-mkToggle(FarmTab, "farm/fastdelivery", "Fast Delivery", false, function(v) Steal.fastDelivery = v end,
-    "Delivers with the Instant Steal V2 fast tween instead of using steps")
-mkToggle(FarmTab, "farm/v2", "Instant Steal V2", false, function(v)
-    Steal.v2 = v
-    if v then
-        -- pola asli: dialog konfirmasi dengan info FPS/ping sebelum menyalakan
-        task.spawn(function()
-            local okF, fps = P(function() return Steal.V2Fps() end)
-            local okP, ping = P(function() return Steal.V2Ping() end)
-            fps = (okF and tonumber(fps)) and math.floor(fps) or 0
-            ping = (okP and tonumber(ping)) and math.floor(ping) or 0
-            P(function()
-                Window:Confirm({
-                    Title = "Instant Steal V2",
-                    Content = string.format(
-                        "Your FPS %d, ping %d ms.\nUsing it with Invisibility may cause some bugs.",
-                        fps, ping),
-                    ConfirmText = "Turn On",
-                    CancelText = "Cancel",
-                    OnConfirm = function() end,
-                    OnCancel = function()
-                        local el = Config.Elements["farm/v2"]
-                        if el then el:Set(false) end
-                    end,
-                })
-            end)
-        end)
-    end
-end, "Super fast tween delivery (3000-4500 studs/s), only in selected zones")
-mkDropdown(FarmTab, "farm/v2approach", "Move To Egg", { "Teleport", "Step" }, "Teleport",
-    function(v) Steal.v2Approach = v end,
-    "How to reach the egg while Instant Steal V2 is on")
-mkSlider(FarmTab, "farm/v2speed", "V2 Tween Speed", 3000, 4500, 3300, 50, "",
-    function(v) Steal.v2Speed = v end, "Speed of the fast tween in studs/s")
-mkMulti(FarmTab, "farm/v2zones", "Instant Steal Zones",
-    { "Titan Temple", "Light Dark", "Enchanted Forest" },
-    function(l) Steal.v2Zones = listToSet(l) end,
-    "Zones where Instant Steal V2 is used",
-    { "Titan Temple", "Light Dark", "Enchanted Forest" })
-mkToggle(FarmTab, "farm/v3", "Teleport To Egg", false, function(v) Steal.v3 = v end,
-    "(V3) Teleport to the egg, then deliver via Star Handler / Admin Treadmill")
-mkStatus(FarmTab, "steal", "Steal: idle")
-mkToggle(FarmTab, "farm/panelauto", "Steal Panel Auto Open", true, function(v) StealPanel.autoOpen = v end)
-mkButton(FarmTab, "Open Steal Panel", function() StealPanel.Show() end)
+    "Highest Value", function(v) Steal.priority = v end)
 
-mkSection(FarmTab, "Shooting Star")
-mkToggle(FarmTab, "farm/star", "Auto Catch Shooting Star", false, function(v) Star.on = v Tasks.Wake("star") end)
-mkStatus(FarmTab, "star", "Star: idle")
+-- ── Auto Progression ──
+mkSection(FarmTab, "Auto Progression")
+mkToggle(FarmTab, "prog/buytrail", "Auto Buy Trail", false, function(v)
+    Progress.buyTrail = v Tasks.Wake("progress")
+end)
+mkToggle(FarmTab, "prog/upbase", "Auto Upgrade Base", false, function(v)
+    Progress.upBase = v Tasks.Wake("progress")
+end)
+mkToggle(FarmTab, "prog/uptread", "Auto Upgrade Treadmill", false, function(v)
+    Tread.upgrade = v Tasks.Wake("progress")
+end)
+mkToggle(FarmTab, "prog/claimcash", "Auto Claim Money", false, function(v)
+    Progress.claimCash = v Tasks.Wake("progress")
+end)
+mkToggle(FarmTab, "prog/claimindex", "Auto Claim Index", false, function(v)
+    Progress.claimIndex = v Tasks.Wake("progress")
+end)
 
-mkSection(FarmTab, "Butterfly Bloom")
-mkToggle(FarmTab, "farm/butter", "Auto Butterfly Bloom", false, function(v) Butter.on = v Tasks.Wake("butterflies") end)
-mkDropdown(FarmTab, "farm/buttermode", "Catch Mode", { "Stand", "Chase" }, "Stand", function(v) Butter.mode = v end)
-mkDropdown(FarmTab, "farm/butterprio", "Catch Priority", { "Rarest", "Nearest First" }, "Rarest",
-    function(v) Butter.priority = v end)
-mkMulti(FarmTab, "farm/butterlist", "Catch Butterflies",
-    { "Common (Emerald)", "Rare (Sapphire)", "Epic (Amethyst)", "Legendary (Radiant)", "Radiant (Golden)" },
-    function(l) Butter.list = {} Butter.onlySet = listToSet(l) end)
-mkSlider(FarmTab, "farm/butterspeed", "Tween Speed", 100, 600, 320, 20, "", function(v) Butter.tweenSpeed = v end)
-mkToggle(FarmTab, "farm/tradeup", "Auto Trade Up", false, function(v) Butter.tradeUp = v end)
-mkMulti(FarmTab, "farm/tiers", "Trade Up Tiers",
-    { "Common (Emerald)", "Rare (Sapphire)", "Epic (Amethyst)", "Legendary (Radiant)", "Radiant (Golden)" },
-    function(l) Butter.tiers = listToSet(l) end)
-mkToggle(FarmTab, "farm/essence", "Smart Trade For Essence", false, function(v) Butter.essence = v end)
-mkToggle(FarmTab, "farm/craft", "Auto Craft Essence", false, function(v) Butter.craft = v end)
-mkStatus(FarmTab, "butterflies", "Butterflies: idle")
-
-mkSection(FarmTab, "Wisp & Banjo")
-mkToggle(FarmTab, "farm/wisp", "Auto Wisp", false, function(v) Wisp.on = v Tasks.Wake("wisp") end)
-mkSlider(FarmTab, "farm/wispneed", "Wisp Speed Power (B)", 1, 10000, 100, 100, "B",
-    function(v) Wisp.threshold = v * 1e9 end)
-mkToggle(FarmTab, "farm/banjo", "Auto Banjo Cricket", false, function(v) Banjo.on = v end)
-mkStatus(FarmTab, "wisp", "Wisp: idle")
-
+-- ── Auto Mutation ──
 mkSection(FarmTab, "Auto Mutation")
 mkToggle(FarmTab, "farm/mutate", "Auto Mutate", false, function(v) Mutate.on = v Tasks.Wake("mutate") end)
-mkMulti(FarmTab, "farm/mutlist", "Mutations To Use",
-    { "Scrambled", "Golden", "Rainbow", "Silver", "Bloom", "Spirit Bloom",
-      "Fractured", "Enchanted", "Parasite", "Nitro", "Spectral",
-      "Boss", "Monstrous", "Sakura", "GreatBloom" },
-    function(l) Mutate.use = listToSet(l) end)
-mkDropdown(FarmTab, "farm/mutrarity", "Mutate Min Rarity", rarityChoices, "Off",
-    function(v) Mutate.minRarity = rarityNumFromLabel(v) end)
+mkMulti(FarmTab, "farm/mutlist", "Mutations To Use", MUT_DISPLAY, function(l)
+    Mutate.use = {}
+    for _, disp in ipairs(l) do
+        local id = MUT_TO_ID[disp]
+        if id then Mutate.use[id] = true end
+    end
+end, "Use items")
+mkDropdown(FarmTab, "farm/mutrarity", "Mutate Min Rarity", rarityAny, "Any",
+    function(v) Mutate.minRarity = rarityNumAny(v) end,
+    "Only eggs of this rarity and above get mutated")
 mkSlider(FarmTab, "farm/mutvalue", "Mutate Min Value", 0, 100000, 0, 500, "/s",
-    function(v) Mutate.minValue = v end)
-mkMulti(FarmTab, "farm/muttarget", "Mutate Target Eggs", eggSpecies, function(l) Mutate.targets = listToSet(l) end)
+    function(v) Mutate.minValue = v end, "Skip eggs worth less than this (0 = off)")
+mkMulti(FarmTab, "farm/muttarget", "Mutate Target Eggs", eggSpecies, function(l) Mutate.targets = listToSet(l) end,
+    "Only mutate these eggs (empty = all)")
 mkDropdown(FarmTab, "farm/mutprio", "Mutate Priority",
-    { "Highest Value", "Best Rarity", "Biggest Size" }, "Highest Value", function(v) Mutate.priority = v end)
-mkStatus(FarmTab, "mutate", "Mutation: idle")
+    { "Highest Value", "Best Rarity", "Biggest Size" }, "Highest Value",
+    function(v) Mutate.priority = v end, "Which egg gets mutated first")
+mkStatus(FarmTab, "mutate", "Mutate Status  |  Off")
 
+-- ── Auto Place Egg ──
 mkSection(FarmTab, "Auto Place Egg")
-mkToggle(FarmTab, "farm/place", "Auto Place Egg", false, function(v) Place.on = v Tasks.Wake("place") end)
+mkToggle(FarmTab, "farm/place", "Auto Place Egg", false, function(v) Place.on = v Tasks.Wake("place") end,
+    "Auto place")
 mkDropdown(FarmTab, "farm/placerule", "Place Egg Rule",
-    { "Always", "Steal Idle", "After Steal", "Night Only" }, "Always", function(v) Place.rule = v end)
+    { "Always", "Steal Idle", "After Steal", "Night Only" }, "Always", function(v) Place.rule = v end,
+    "Place when")
 mkDropdown(FarmTab, "farm/placeorder", "Place Egg Order",
-    { "Biggest Size", "Highest Value", "Smallest Size" }, "Biggest Size", function(v) Place.order = v end)
-mkMulti(FarmTab, "farm/placerarity", "Place Rarities", Repo.RarityOrder, function(l) Place.rarities = listToSet(l) end)
+    { "Biggest Size", "Highest Value", "Smallest Size" }, "Biggest Size", function(v) Place.order = v end,
+    "Place first")
+mkMulti(FarmTab, "farm/placerarity", "Place Rarities", Repo.RarityOrder,
+    function(l) Place.rarities = listToSet(l) end, nil, Repo.RarityOrder)
 mkMulti(FarmTab, "farm/placespecific", "Place Specific Eggs", eggSpecies, function(l) Place.specific = listToSet(l) end)
 mkSlider(FarmTab, "farm/placevalue", "Min Place Value", 0, 100000, 0, 500, "/s", function(v) Place.minValue = v end)
-mkStatus(FarmTab, "place", "Place: idle")
+mkStatus(FarmTab, "place", "Pen Status  |  Off")
 
+-- ── Auto Treadmill ──
 mkSection(FarmTab, "Auto Treadmill")
 mkToggle(FarmTab, "farm/tread", "Auto Treadmill", false, function(v) Tread.on = v Tasks.Wake("treadride") end)
-mkToggle(FarmTab, "farm/treadup", "Auto Upgrade Treadmill", false, function(v) Tread.upgrade = v end)
-mkToggle(FarmTab, "farm/treadadmin", "Use Admin Treadmill", false, function(v) Tread.admin = v end)
-mkStatus(FarmTab, "treadmill", "Treadmill: idle")
 
+-- ── Auto Hatch & Equip ──
 mkSection(FarmTab, "Auto Hatch & Equip")
 mkToggle(FarmTab, "farm/hatch", "Auto Hatch", false, function(v) Hatch.on = v Tasks.Wake("hatch") end)
-mkDropdown(FarmTab, "farm/hatchrarity", "Hatch Min Rarity", rarityChoices, "Off",
-    function(v) Hatch.minRarity = rarityNumFromLabel(v) end)
+mkDropdown(FarmTab, "farm/hatchrarity", "Hatch Min Rarity", rarityAny, "Any",
+    function(v) Hatch.minRarity = rarityNumAny(v) end)
 mkSlider(FarmTab, "farm/hatchvalue", "Min Hatch Value", 0, 100000, 0, 500, "/s", function(v) Hatch.minValue = v end)
 mkMulti(FarmTab, "farm/hatchlist", "Hatch Specific Eggs", eggSpecies, function(l) Hatch.specific = listToSet(l) end)
-mkToggle(FarmTab, "farm/equipbest", "Auto Equip Best", false, function(v) Hatch.equipBest = v end)
-mkStatus(FarmTab, "hatch", "Hatch: idle")
+mkToggle(FarmTab, "farm/equipbest", "Auto Equip Best", false, function(v) Hatch.equipBest = v end,
+    "Equip best pets")
 
+-- ── Auto Sell ──
 mkSection(FarmTab, "Auto Sell")
-mkToggle(FarmTab, "farm/sellpet", "Auto Sell Pet", false, function(v) Sell.petOn = v Tasks.Wake("sell") end)
-mkButton(FarmTab, "Sell Pets Now", function() Sell.RunOnce() end)
-mkDropdown(FarmTab, "farm/sellpetrule", "Sell Pet Rule",
-    { "Rarity Only", "Value Only", "Rarity And Value", "Rarity Or Value" },
-    "Rarity And Value", function(v) Sell.petRule = v end)
-mkDropdown(FarmTab, "farm/sellpetmax", "Pet Max Rarity", rarityChoices, "Epic",
-    function(v) Sell.petMax = rarityNumFromLabel(v) end)
+mkToggle(FarmTab, "farm/sellpet", "Auto Sell Pet", false, function(v) Sell.petOn = v Tasks.Wake("sell") end,
+    "Auto sell pets")
+mkDropdown(FarmTab, "farm/sellpetmax", "Pet Max Rarity", rarityAny, "Epic",
+    function(v) Sell.petMax = rarityNumAny(v) end, "Sell rarities")
 mkSlider(FarmTab, "farm/sellpetvalue", "Pet Sell Value", 0, 100000, 0, 500, "/s",
-    function(v) Sell.petValue = v end)
+    function(v) Sell.petValue = v end, "Only below")
 mkToggle(FarmTab, "farm/keepmutpet", "Keep Mutated Pets", true, function(v) Sell.petKeepMut = v end)
-mkMulti(FarmTab, "farm/blackpet", "Blacklist Sell Pets", petSpecies, function(l) Sell.petBlack = listToSet(l) end)
-mkToggle(FarmTab, "farm/sellegg", "Auto Sell Egg", false, function(v) Sell.eggOn = v end)
-mkButton(FarmTab, "Sell Eggs Now", function() Sell.RunOnce() end)
-mkDropdown(FarmTab, "farm/selleggrule", "Sell Egg Rule",
-    { "Rarity Only", "Value Only", "Rarity And Value", "Rarity Or Value" },
-    "Rarity And Value", function(v) Sell.eggRule = v end)
-mkDropdown(FarmTab, "farm/selleggmax", "Egg Max Rarity", rarityChoices, "Epic",
-    function(v) Sell.eggMax = rarityNumFromLabel(v) end)
+mkMulti(FarmTab, "farm/blackpet", "Blacklist Sell Pets", petSpecies, function(l) Sell.petBlack = listToSet(l) end,
+    "Never sell")
+mkButton(FarmTab, "Sell Pets Now", function() Sell.RunOnce() end)
+mkToggle(FarmTab, "farm/sellegg", "Auto Sell Egg", false, function(v) Sell.eggOn = v Tasks.Wake("sell") end,
+    "Auto sell eggs")
+mkDropdown(FarmTab, "farm/selleggmax", "Egg Max Rarity", rarityAny, "Epic",
+    function(v) Sell.eggMax = rarityNumAny(v) end, "Sell rarities")
 mkSlider(FarmTab, "farm/selleggvalue", "Egg Sell Value", 0, 100000, 0, 500, "/s",
-    function(v) Sell.eggValue = v end)
+    function(v) Sell.eggValue = v end, "Only below")
 mkToggle(FarmTab, "farm/keepmutegg", "Keep Mutated Eggs", true, function(v) Sell.eggKeepMut = v end)
-mkMulti(FarmTab, "farm/blackegg", "Blacklist Sell Eggs", eggSpecies, function(l) Sell.eggBlack = listToSet(l) end)
-mkStatus(FarmTab, "sell", "Sell: idle")
+mkMulti(FarmTab, "farm/blackegg", "Blacklist Sell Eggs", eggSpecies, function(l) Sell.eggBlack = listToSet(l) end,
+    "Never sell")
+mkButton(FarmTab, "Sell Eggs Now", function() Sell.RunOnce() end)
 
+-- ── Auto Fuse Machine ──
 mkSection(FarmTab, "Auto Fuse Machine")
-mkToggle(FarmTab, "farm/fuse", "Auto Fuse Machine", false, function(v) Fuse.on = v Tasks.Wake("fuse") end)
+mkToggle(FarmTab, "farm/fuse", "Auto Fuse Machine", false, function(v) Fuse.on = v Tasks.Wake("fuse") end,
+    "Auto fuse")
 mkDropdown(FarmTab, "farm/fusemode", "Fuse Priority Mode",
     { "Lowest Rarity First", "Highest Rarity First", "Most Copies First", "Lowest Value First" },
-    "Lowest Rarity First", function(v) Fuse.mode = v end)
+    "Lowest Rarity First", function(v) Fuse.mode = v end, "Fuse first")
 mkDropdown(FarmTab, "farm/fuseorder", "Pets To Use",
-    { "Lowest To Highest", "Highest To Lowest" }, "Lowest To Highest", function(v) Fuse.order = v end)
-mkDropdown(FarmTab, "farm/fusemax", "Max Rarity to Fuse", rarityChoices, "Divine",
-    function(v) Fuse.maxRarity = rarityNumFromLabel(v) == 0 and 10 or rarityNumFromLabel(v) end)
-mkMulti(FarmTab, "farm/fusespecies", "Specific Species to Fuse", petSpecies, function(l) Fuse.species = listToSet(l) end)
+    { "Lowest To Highest", "Highest To Lowest" }, "Lowest To Highest", function(v) Fuse.order = v end,
+    "Use pets")
+mkDropdown(FarmTab, "farm/fusemax", "Max Rarity to Fuse", rarityAny, "Divine",
+    function(v) Fuse.maxRarity = rarityNumAny(v) end, "Rarities")
+mkMulti(FarmTab, "farm/fusespecies", "Specific Species to Fuse", petSpecies, function(l) Fuse.species = listToSet(l) end,
+    "Only these pets")
 mkToggle(FarmTab, "farm/fuseskipmut", "Skip Mutated Pets", true, function(v) Fuse.skipMut = v end)
-mkToggle(FarmTab, "farm/fuseeject", "Eject Incomplete Slots", true, function(v) Fuse.eject = v end)
-mkStatus(FarmTab, "fuse", "Fuse: idle")
+mkToggle(FarmTab, "farm/fuseeject", "Eject Incomplete Slots", true, function(v) Fuse.eject = v end,
+    "Eject odd pets")
+mkStatus(FarmTab, "fuse", "Fuse Preview")
 
+-- ── Auto Favorite ──
 mkSection(FarmTab, "Auto Favorite")
-mkToggle(FarmTab, "farm/fav", "Auto Favorite Pet", false, function(v) Fav.on = v Tasks.Wake("fav") end)
-mkButton(FarmTab, "Favorite Pets Now", function() Fav.RunOnce(false) end)
+mkToggle(FarmTab, "farm/fav", "Auto Favorite Pet", false, function(v) Fav.on = v Tasks.Wake("fav") end,
+    "Auto favorite")
 mkDropdown(FarmTab, "farm/favrule", "Favorite Rule", { "Match Any", "Match All" }, "Match Any",
-    function(v) Fav.rule = v end)
-mkDropdown(FarmTab, "farm/favrarity", "Favorite Min Rarity", rarityChoices, "Off",
-    function(v) Fav.minRarity = rarityNumFromLabel(v) end)
-mkSlider(FarmTab, "farm/favvalue", "Min Favorite Value", 0, 100000, 0, 500, "/s", function(v) Fav.minValue = v end)
+    function(v) Fav.rule = v end, "Match")
+mkDropdown(FarmTab, "farm/favrarity", "Favorite Min Rarity", rarityAny, "Any",
+    function(v) Fav.minRarity = rarityNumAny(v) end, "Rarities")
 mkMulti(FarmTab, "farm/favmut", "Favorite Mutations",
-    { "Any Mutation", "No Mutation", "Golden", "Silver", "Rainbow", "Boss", "Monstrous", "Sakura", "GreatBloom" },
+    { "Any Mutation", "No Mutation", "Golden", "Silver", "Rainbow", "Sakura",
+      "GreatBloom", "Boss", "Monstrous", "Scrambled", "Enchanted", "Nitro", "Spectral" },
     function(l) Fav.mutations = listToSet(l) end)
-mkMulti(FarmTab, "farm/favspecies", "Always Favorite Species", petSpecies, function(l) Fav.species = listToSet(l) end)
-mkToggle(FarmTab, "farm/favequip", "Auto Favorite Equipped", false, function(v) Fav.equipped = v end)
+mkSlider(FarmTab, "farm/favvalue", "Min Favorite Value", 0, 100000, 0, 500, "/s", function(v) Fav.minValue = v end)
+mkMulti(FarmTab, "farm/favspecies", "Always Favorite Species", petSpecies, function(l) Fav.species = listToSet(l) end,
+    "Always favorite")
+mkToggle(FarmTab, "farm/favequip", "Auto Favorite Equipped", false, function(v) Fav.equipped = v end,
+    "Favorite equipped")
 mkToggle(FarmTab, "farm/favunequip", "Auto Unfavorite Equipped", false, function(v) Fav.unfav = v end)
+mkButton(FarmTab, "Favorite Pets Now", function() Fav.RunOnce(false) end)
 mkButton(FarmTab, "Favorite Equipped Now", function() Fav.RunOnce(false) end)
---════════════ BAGIAN 7 — TAB CONFIG & BOOT ════════════
---══════════════════════════ TAB 2: CONFIG ══════════════════════════
---────────────────────────────[ TAB: AUTO HOP + PROGRESS ]────────────────────────────
--- Paritas struktur kode baru (SAE v172610): tab "Auto Hop | Egg Finder"
--- dan tab "Progress | Auto Progression".
+mkButton(FarmTab, "Unfavorite Equipped Now", function() Fav.RunOnce(true) end)
+mkStatus(FarmTab, "fav", "Favorite Preview")
 
+-- ── Priority Rotation ──
+mkSection(FarmTab, "Priority Rotation")
+mkToggle(FarmTab, "rot/on", "Rotate Fishing And Treadmill", false, function(v)
+    Rotation.on = v
+    Rotation.swapAt = 0
+    Tasks.Wake("rotation")
+end)
+mkDropdown(FarmTab, "rot/mode", "Rotation Switch", { "Timer", "Every Day" }, "Timer",
+    function(v) Rotation.mode = v end)
+mkSlider(FarmTab, "rot/fishmin", "Fishing Minutes", 1, 120, 5, 1, " min",
+    function(v) Rotation.fishMin = v end)
+mkSlider(FarmTab, "rot/treadmin", "Treadmill Minutes", 1, 120, 5, 1, " min",
+    function(v) Rotation.treadMin = v end)
+mkStatus(FarmTab, "rotation", "Rotation Status  |  Off")
+
+-- ── Priority ──
+mkSection(FarmTab, "Priority")
+mkStatus(FarmTab, "prioqueue", "Task Queue  |  Idle")
+
+--══════════════════════════ TAB: EVENT ══════════════════════════
+local EventTab = Window:CreateTab({ Name = "Event", Icon = "🎃" })
+
+-- ── Pumpkin Boss ──
+mkSection(EventTab, "Pumpkin Boss")
+mkStatus(EventTab, "hwpump", "Pumpkin Boss Status  |  Off")
+mkToggle(EventTab, "event/pboss", "Auto Pumpkin Boss", false, function(v) PBoss.on = v end)
+mkToggle(EventTab, "event/pdodge", "Auto Dodge Attacks", true, function(v) PBoss.dodge = v end)
+
+-- ── Halloween Dimension ──
+mkSection(EventTab, "Halloween Dimension")
+mkStatus(EventTab, "hwstatus", "Halloween Status  |  Off")
+mkToggle(EventTab, "admin/hwsteal", "Auto Steal Halloween Eggs", false, function(v) HWX.on = v end)
+mkToggle(EventTab, "event/hwinstant", "Instant Steal Halloween Eggs", true, function(v)
+    Steal.hwInstant = v
+    HWX.instant = v
+end)
+mkToggle(EventTab, "event/hwholders", "Take Halloween Eggs From Holders", true, function(v) HWX.holders = v end)
+mkToggle(EventTab, "event/hwindex", "Steal Missing Halloween Index", true, function(v) HWX.index = v end)
+mkToggle(EventTab, "event/hwplace", "Place And Hatch Missing Index Eggs", false, function(v) HWX.placeHatch = v end)
+mkMulti(EventTab, "event/hweggs", "Halloween Eggs To Steal", eggSpecies, function(l) HWX.eggs = listToSet(l) end)
+mkMulti(EventTab, "event/hwrarities", "Halloween Egg Rarities", HW_RARITIES, function(l) HWX.rarities = listToSet(l) end)
+mkSlider(EventTab, "event/hwminval", "Min Value", 0, 100000, 0, 500, "/s", function(v) HWX.minValue = v end)
+mkToggle(EventTab, "event/pumpkinmoon", "Auto Pumpkin Moon", true, function(v) HwPump.on = v end)
+mkToggle(EventTab, "event/pumptp", "Teleport To Pumpkins", true, function(v) HwPump.tp = v end)
+mkSlider(EventTab, "event/pumpspeed", "Walk Speed", 100, 1000, 300, 10, " st/s", function(v) HwPump.speed = v end)
+mkToggle(EventTab, "event/hwbuy", "Auto Buy Halloween Dimension Egg", false, function(v) HWX.buy = v end)
+
+-- ── Halloween Monsters ──
+mkSection(EventTab, "Halloween Monsters")
+mkToggle(EventTab, "event/hwmon", "Auto Farm Monsters", false, function(v) HwMon.on = v end)
+mkMulti(EventTab, "event/hwmonkill", "Monsters To Kill", HW_MONS, function(l) HwMon.kill = listToSet(l) end,
+    nil, HW_MONS)
+mkDropdown(EventTab, "event/hwmonorder", "Monster Order", { "Closest", "Most Tokens" }, "Closest",
+    function(v) HwMon.order = v end)
+mkMulti(EventTab, "event/hwmonweap", "Use Weapons", { "Best Bat" }, function(l) HwMon.weapons = listToSet(l) end)
+mkSlider(EventTab, "event/hwmonspeed", "Walk Speed", 100, 1000, 300, 10, " st/s", function(v) HwMon.speed = v end)
+mkToggle(EventTab, "event/hwmontp", "Teleport To Monsters", true, function(v) HwMon.tp = v end)
+mkToggle(EventTab, "event/hwmonblood", "Only During Blood Moon", false, function(v) HwMon.bloodOnly = v end)
+mkToggle(EventTab, "event/hwmonball", "Farm All Monsters In Blood Moon", false, function(v) HwMon.bloodAll = v end)
+mkStatus(EventTab, "hwmon", "Monster Status  |  Off")
+
+-- ── Ghost Dog & Fishing ──
+mkSection(EventTab, "Ghost Dog & Fishing")
+mkStatus(EventTab, "hwdog", "Ghost Dog Status  |  Off")
+mkToggle(EventTab, "event/hwdog", "Auto Ghost Dog Quest", false, function(v) HwDog.on = v end)
+mkToggle(EventTab, "event/fishing", "Auto Fishing", false, function(v)
+    HwFish.on = v
+    Tasks.Wake("hwfish")
+end)
+mkDropdown(EventTab, "event/luck", "Cast Luck",
+    { "x1.5 Perfect", "x1.2", "x1.1", "x1.0 Fastest" }, "x1.5 Perfect",
+    function(v) HwFish.luck = v end)
+mkDropdown(EventTab, "event/spot", "Fishing Spot", { "Default", "Spot 1", "Spot 2", "Spot 3" }, "Default",
+    function(v) HwFish.spot = v end)
+mkButton(EventTab, "Save Spot Here", function()
+    local pos = Movement.Pos()
+    if not pos then Notify("Fishing", "Tidak ada posisi", 3) return end
+    local n = tonumber(string.match(HwFish.spot or "Default", "%d")) or 1
+    HwFish.spots[n] = pos
+    Notify("Fishing", "Spot " .. n .. " disimpan di sini", 3)
+end)
+mkSlider(EventTab, "event/fishspeed", "Walk Speed", 100, 1000, 300, 10, " st/s", function(v) HwFish.speed = v end)
+mkToggle(EventTab, "event/fishmon", "Farm Monsters While Fishing", false, function(v)
+    if v and not HwMon.on then
+        local el = Config.Elements["event/hwmon"]
+        if el and el.Set then P(function() el:Set(true, false) end) end
+        HwMon.on = true
+    end
+end)
+
+-- ── Phantom Express ──
+mkSection(EventTab, "Phantom Express")
+mkStatus(EventTab, "express", "Phantom Express Status  |  Off")
+mkToggle(EventTab, "event/express", "Auto Phantom Express", false, function(v) Express.on = v end)
+mkToggle(EventTab, "event/vacuum", "Auto Vacuum Ghouler Boss", true, function(v) Express.vacuum = v end)
+mkDropdown(EventTab, "event/ghosttarget", "Ghost Target", { "Rarest First", "Closest" }, "Rarest First",
+    function(v) Express.ghostTarget = v end)
+mkMulti(EventTab, "event/expressweap", "Use Weapons", { "Best Bat" }, function(l) Express.weapons = listToSet(l) end)
+mkSlider(EventTab, "event/expressspeed", "Walk Speed", 100, 1000, 300, 10, " st/s", function(v) Express.speed = v end)
+mkToggle(EventTab, "event/ghosttp", "Teleport To Ghosts", true, function(v) Express.tp = v end)
+mkToggle(EventTab, "event/souls", "Auto Trade Souls", false, function(v) Express.souls = v end)
+
+-- ── Shooting Star ──
+mkSection(EventTab, "Shooting Star")
+mkStatus(EventTab, "star", "Shooting Star Status  |  Off")
+mkToggle(EventTab, "farm/star", "Auto Catch Shooting Star", false, function(v) Star.on = v Tasks.Wake("star") end)
+
+-- ── Butterfly Bloom ──
+mkSection(EventTab, "Butterfly Bloom")
+mkToggle(EventTab, "farm/butter", "Auto Butterfly Bloom", false, function(v) Butter.on = v Tasks.Wake("butterflies") end)
+mkDropdown(EventTab, "farm/buttermode", "Catch Mode",
+    { "Stand", "Chase", "Circle", "Patrol" }, "Stand", function(v) Butter.mode = v end,
+    "Only for Chase mode")
+mkDropdown(EventTab, "farm/butterprio", "Catch Priority", { "Rarest", "Nearest" }, "Rarest",
+    function(v) Butter.priority = v end, "Only for Chase mode")
+mkMulti(EventTab, "farm/butterlist", "Catch Butterflies", BUTTER_LIST, function(l)
+    Butter.onlySet = {}
+    for _, disp in ipairs(l) do
+        local id = BUTTER_TO_ID[disp]
+        if id then Butter.onlySet[id] = true end
+    end
+end, "Catch", BUTTER_LIST)
+mkSlider(EventTab, "farm/butterspeed", "Tween Speed  ", 100, 600, 320, 10, "studs/s",
+    function(v) Butter.tweenSpeed = v end, "Catch speed")
+mkToggle(EventTab, "farm/tradeup", "Auto Trade Up", false, function(v) Butter.tradeUp = v end)
+mkMulti(EventTab, "farm/tiers", "Trade Up Tiers", BUTTER_LIST, function(l) Butter.tiers = listToSet(l) end,
+    "Trade")
+mkToggle(EventTab, "farm/essence", "Smart Trade For Essence", false, function(v) Butter.essence = v end)
+mkToggle(EventTab, "farm/craft", "Auto Craft Essence", false, function(v) Butter.craft = v end)
+mkStatus(EventTab, "wisp", "Wisp Status  |  Off")
+mkToggle(EventTab, "farm/wisp", "Auto Wisp", false, function(v) Wisp.on = v Tasks.Wake("wisp") end,
+    "Auto wisp quest")
+mkToggle(EventTab, "farm/banjo", "Auto Banjo Cricket", false, function(v) Banjo.on = v end)
+
+-- ── The Hollow ──
+mkSection(EventTab, "The Hollow")
+mkStatus(EventTab, "hollow", "The Hollow Status  |  Off")
+mkToggle(EventTab, "event/hollow", "Auto Race The Hollow", false, function(v) Hollow.on = v end)
+mkSlider(EventTab, "event/hollowspeed", "Hollow Race Speed", 140, 400, 300, 1, " st/s",
+    function(v) Hollow.speed = v end)
+mkToggle(EventTab, "event/hollowpower", "Use Race Power-Ups", true, function(v) Hollow.powerups = v end)
+
+--══════════════════════════ TAB: ADMIN ABUSE ══════════════════════════
+local AdminTab = Window:CreateTab({ Name = "Admin Abuse", Icon = "🔨" })
+
+-- ── Capture The Egg ──
+mkSection(AdminTab, "Capture The Egg")
+mkToggle(AdminTab, "admin/capture", "Auto Capture Event Egg", false, function(v) Capture.on = v end)
+mkToggle(AdminTab, "admin/capturetake", "Take It From The Holder", false, function(v) Capture.take = v end)
+mkSlider(AdminTab, "admin/captureheight", "Hold Height", 20, 120, 45, 1, "studs",
+    function(v) Capture.holdHeight = v end)
+mkSlider(AdminTab, "admin/captureaway", "Keep Away Distance", 20, 150, 45, 1, "studs",
+    function(v) Capture.keepAway = v end)
+mkStatus(AdminTab, "capture", "Capture Status  |  Off")
+
+-- ── Admin Treadmill ──
+mkSection(AdminTab, "Admin Treadmill")
+mkToggle(AdminTab, "farm/treadadmin", "Use Admin Treadmill", false, function(v) Tread.admin = v end,
+    "Admin treadmill")
+
+-- ── Instant Steal V3 ──
+mkSection(AdminTab, "Instant Steal V3")
+P(function()
+    AdminTab:AddLabel({ Text = "Instant Steal V3 Note: Needs Admin Treadmill" })
+end)
+mkToggle(AdminTab, "admin/instantv3", "Use Instant Steal V3", true, function(v)
+    Steal.adminSteal = v
+    Steal.v3 = v
+end)
+
+-- ── Minigame Eggs ──
+mkSection(AdminTab, "Minigame Eggs")
+mkToggle(AdminTab, "admin/minigame", "Auto Steal Minigame Egg", true, function(v) Minigame.on = v end,
+    "Red Light Green Light, T-Rex Run")
+
+-- ── Cursed Island Wars ──
+mkSection(AdminTab, "Cursed Island Wars")
+mkStatus(AdminTab, "ciw", "Cursed Island Wars Status  |  Off")
+mkToggle(AdminTab, "admin/ciw", "Auto Play Cursed Island Wars", false, function(v) CIW.on = v end)
+mkDropdown(AdminTab, "admin/ciwtarget", "Island Wars Target",
+    { "Enemies And Base", "Walls And Crystal" }, "Enemies And Base",
+    function(v) CIW.target = v end)
+
+--══════════════════════════ TAB: PLAYER ══════════════════════════
+local PlayerTab = Window:CreateTab({ Name = "Player", Icon = "👤" })
+
+-- ── ESP ──
+mkSection(PlayerTab, "ESP")
+mkToggle(PlayerTab, "player/espeggs", "ESP Eggs", false, function(v) ESP.eggs = v end, "Egg ESP")
+mkToggle(PlayerTab, "player/espfixed", "ESP Fixed Size", false, function(v) ESP.fixed = v end, "Fixed size")
+mkToggle(PlayerTab, "player/espown", "ESP Own Base Eggs", false, function(v) ESP.own = v end, "Pen egg ESP")
+mkToggle(PlayerTab, "player/espothers", "ESP Other Base Eggs", false, function(v) ESP.others = v end, "Other pens ESP")
+mkDropdown(PlayerTab, "player/espminrar", "ESP Min Rarity", rarityAny, "Any",
+    function(v) ESP.minRarity = rarityNumAny(v) end,
+    "Show eggs of the chosen rarity and every rarity above it")
+mkMulti(PlayerTab, "player/espshow", "ESP Show Info",
+    { "Name", "Rarity", "Value", "Mutations", "Distance" }, function(l) ESP.info = listToSet(l) end,
+    "Show", { "Name", "Rarity", "Value", "Mutations", "Distance" })
+mkSlider(PlayerTab, "player/espminval", "Min ESP Value", 0, 100000, 0, 500, "/s",
+    function(v) ESP.minValue = v end, "Min value")
+mkSlider(PlayerTab, "player/espeggsize", "ESP Egg Size", 50, 200, 75, 5, "%",
+    function(v) ESP.eggSize = v / 100 end)
+mkToggle(PlayerTab, "player/espguards", "ESP Guards", false, function(v) ESP.guards = v end, "Guard ESP")
+mkSlider(PlayerTab, "player/espguardsize", "ESP Guard Size", 50, 200, 75, 5, "%",
+    function(v) ESP.guardSize = v / 100 end)
+mkToggle(PlayerTab, "player/espplayers", "ESP Players", false, function(v) ESP.players = v end, "Player ESP")
+mkMulti(PlayerTab, "player/espplayerinfo", "ESP Player Info",
+    { "Name", "Username", "Avatar", "Tool" }, function(l) ESP.playerInfo = listToSet(l) end,
+    "Show", { "Name", "Tool" })
+mkSlider(PlayerTab, "player/espplayersize", "ESP Player Size", 50, 200, 75, 5, "%",
+    function(v) ESP.playerSize = v / 100 end)
+mkToggle(PlayerTab, "player/invvalues", "Inventory Values", false, function(v) ESP.invValues = v end)
+
+-- ── Movement ──
+mkSection(PlayerTab, "Movement")
+mkToggle(PlayerTab, "player/speed", "Speed Boost", false, function(v) MoveX.speed = v end)
+mkSlider(PlayerTab, "player/boost", "Boost Speed", 20, 1000, 350, 5, "studs/s",
+    function(v) MoveX.boost = v end)
+mkToggle(PlayerTab, "player/infjump", "Infinite Jump", false, function(v) MoveX.SetInfJump(v) end)
+
+-- ── Character ──
+mkSection(PlayerTab, "Character")
+mkToggle(PlayerTab, "player/invis", "Invisibility", false, function(v)
+    CharX.invis = v
+    Character.ApplyInvisibility(v)
+end, "Invisible")
+mkToggle(PlayerTab, "player/antirag", "Anti Ragdoll", false, function(v) CharX.antiRag = v end)
+mkToggle(PlayerTab, "player/antitrap", "Anti Trap", false, function(v) CharX.antiTrap = v end,
+    "Ignore traps")
+mkToggle(PlayerTab, "player/prompts", "Instant Prompts", false, function(v) CharX.prompts = v end)
+
+-- ── Combat ──
+mkSection(PlayerTab, "Combat")
+mkStatus(PlayerTab, "combat", "Hit Status  |  Idle")
+local function setCombatMode(modeName, ownKey)
+    -- radio 3-mode ala kode baru: nyalakan satu, matikan dua lainnya (SILENT)
+    Combat.on = true
+    Combat.mode = modeName
+    local all = { "player/hitnearest", "player/hotholders", "player/hitspecific" }
+    for _, k in ipairs(all) do
+        if k ~= ownKey then
+            local e = Config.Elements[k]
+            if e and e.Set then P(function() e:Set(false, false) end) end
+        end
+    end
+end
+
+mkToggle(PlayerTab, "player/hitnearest", "Auto Hit Nearest Player", false, function(v)
+    if v then setCombatMode("Auto Hit Nearest Player", "player/hitnearest") else Combat.on = false end
+end, "Hit who")
+mkToggle(PlayerTab, "player/hotholders", "Auto Hit Egg Holders", false, function(v)
+    if v then setCombatMode("Auto Hit Egg Holders", "player/hotholders") else Combat.on = false end
+end, "Hit who")
+mkToggle(PlayerTab, "player/hitspecific", "Auto Hit Specific Player", false, function(v)
+    if v then setCombatMode("Auto Hit Specific Player", "player/hitspecific") else Combat.on = false end
+end, "Hit who")
+mkDropdown(PlayerTab, "player/hitplayer", "Hit Player", playerNames, playerNames[1],
+    function(v) Combat.target = v end)
+mkToggle(PlayerTab, "player/hitaura", "Hit Aura", false, function(v) Combat.aura = v end)
+mkMulti(PlayerTab, "player/swapweap", "Swap Weapons", { "Best Bat" }, function(l)
+    Combat.weapons = {}
+    for i, w in ipairs(l) do
+        if i <= 2 then Combat.weapons[i] = w end
+    end
+end, "Pick up to 2 weapons you own to switch between while hitting (empty = best bat only)")
+mkSlider(PlayerTab, "player/weap1", "Weapon 1 Hold", 0.2, 1.5, 0.3, 0.01, "s",
+    function(v) Combat.swapT = v end)
+mkSlider(PlayerTab, "player/weap2", "Weapon 2 Hold", 0.2, 1.5, 0.4, 0.01, "s",
+    function(v) Combat.swapT2 = v end)
+P(function() PlayerTab:AddLabel({ Text = "Chase Settings" }) end)
+mkSlider(PlayerTab, "player/chase", "Hit Tween Speed", 100, 1000, 400, 10, "studs/s",
+    function(v) Combat.chase = v end)
+mkSlider(PlayerTab, "player/hitmax", "Hit Max Speed", 100, 1000, 750, 10, "studs/s",
+    function(v) Combat.maxSpeed = v end)
+mkSlider(PlayerTab, "player/hitlead", "Hit Lead", -400, 100, -275, 1, "",
+    function(v) Combat.lead = v end,
+    "Stand further ahead of the target (+) or closer to them (-)")
+mkSlider(PlayerTab, "player/hitsweep", "Hit Sweep", 0, 250, 60, 1, "%",
+    function(v) Combat.sweep = v end,
+    "How far you move back and forth in front of the target")
+mkButton(PlayerTab, "Add/Remove Hits On Quick Bar 2", function()
+    P(function()
+        for _, keyName in ipairs({ "player/hitnearest", "player/hotholders", "player/hitspecific" }) do
+            local e = Config.Elements[keyName]
+            if e then
+                ThorUI:AddQuickAction({
+                    Icon = "👊", Name = "Hit: " .. tostring(keyName),
+                    Callback = function()
+                        local cur = e.Get and e:Get()
+                        if e.Set then P(function() e:Set(not cur, false) end) end
+                    end,
+                })
+            end
+        end
+        Notify("Combat", "Toggles hit ditambahkan ke quick bar", 3)
+    end)
+end, "Pin or unpin the hit toggles on Quick Bar 2")
+
+--══════════════════════════ TAB: PREDICTOR ══════════════════════════
+local PredTab = Window:CreateTab({ Name = "Predictor", Icon = "🔮" })
+
+-- ── Discord Webhook ──
+mkSection(PredTab, "Discord Webhook")
+mkInput(PredTab, "webhook/url", "Webhook URL", "https://discord.com/api/webhooks/...",
+    function(t) Webhook.url = tostring(t or "") end)
+mkToggle(PredTab, "webhook/everyone", "Ping @everyone", false, function(v) Webhook.everyone = v end,
+    "Ping everyone")
+mkMulti(PredTab, "webhook/notify", "Notify On",
+    { "Egg Stolen", "Egg Fused", "Inventory Full" }, function(l)
+        local set = listToSet(l)
+        Webhook.events = {
+            ["Egg Stolen"] = set["Egg Stolen"] or false,
+            ["Egg Fused"] = set["Egg Fused"] or false,
+            ["Inventory Full"] = set["Inventory Full"] or false,
+        }
+    end, "What to post", { "Egg Stolen", "Egg Fused", "Inventory Full" })
+mkDropdown(PredTab, "webhook/minrar", "Webhook Min Rarity", rarityAny, "Any",
+    function(v) Webhook.minRarity = rarityNumAny(v) end, "Rarities")
+mkSlider(PredTab, "webhook/minval", "Webhook Min Value", 0, 100000, 0, 500, "/s",
+    function(v) Webhook.minValue = v end,
+    "Only post eggs worth at least this. Drag or type 250k, 50m, 1.5b")
+mkMulti(PredTab, "webhook/eggs", "Webhook Eggs", eggSpecies, function(l)
+    Webhook.specific = listToSet(l)
+end, "Only post these eggs (empty = all)")
+
+-- ── Egg Predictor ──
+mkSection(PredTab, "Egg Predictor")
+mkDropdown(PredTab, "pred/sort", "Sort By", { "Value", "Rarity", "Time Left" }, "Value",
+    function(v) Predictor.sort = v end, "Sort eggs")
+mkToggle(PredTab, "pred/card", "Preview Card", true, function(v) Predictor.spotlight = v end)
+mkStatus(PredTab, "predictor", "Egg Predictor  |  loading...")
+
+-- ── Fuse Predictor ──
+mkSection(PredTab, "Fuse Predictor")
+mkStatus(PredTab, "fusepred", "Fuse Predictor  |  loading...")
+
+--══════════════════════════ TAB: SERVER ══════════════════════════
+local ServerTab = Window:CreateTab({ Name = "Server", Icon = "🌐" })
+
+mkSection(ServerTab, "Server")
+mkButton(ServerTab, "Server Hop", function() AutoHop.HopNow("Server tab") end)
+mkInput(ServerTab, "server/jobid", "Job ID", "tempel Job ID di sini...", function(t) end)
+mkButton(ServerTab, "Join Job ID", function()
+    local el = Config.Elements["server/jobid"]
+    ServerX.JoinJob(el and el.Get and el:Get() or "")
+end)
+mkButton(ServerTab, "Copy Current Job ID", function() ServerX.CopyJobId() end)
+mkButton(ServerTab, "Rejoin Server", function() ServerX.Rejoin() end)
+mkToggle(ServerTab, "server/autoload", "Auto Load Script", true, function(v)
+    ServerX.autoLoad = v
+end, "Join and stay")
+mkDropdown(ServerTab, "server/hopmode", "Server Hop Mode",
+    { "Least Players", "Most Players", "Random" }, "Least Players",
+    function(v) ServerX.hopMode = v end, "Hop to")
+mkToggle(ServerTab, "server/rejoin", "Auto Rejoin When Disconnect", false, function(v)
+    ServerX.autoRejoin = v
+end, "Rejoin on kick")
+
+--══════════════════════════ TAB: MISC ══════════════════════════
+local MiscTab = Window:CreateTab({ Name = "Misc", Icon = "⚙️" })
+
+-- ── Performance ──
+mkSection(MiscTab, "Performance")
+mkSlider(MiscTab, "misc/fpscap", "FPS Cap", 10, 1000, 240, 1, " FPS",
+    function(v)
+        Perf.cap = v
+        perfApplyCap()
+    end, "FPS cap")
+mkToggle(MiscTab, "misc/optimizer", "Optimizer", false, function(v)
+    Perf.opt = v
+    if v then task.spawn(perfApplyOptimizer) end
+end, "Low graphics")
+mkDropdown(MiscTab, "misc/optmode", "Optimizer Mode", { "Balanced", "Strong", "Max" }, "Strong",
+    function(v)
+        Perf.optMode = v
+        if Perf.opt then task.spawn(perfApplyOptimizer) end
+    end)
+mkToggle(MiscTab, "misc/fpshud", "FPS and Ping", true, function(v)
+    Perf.fpsHud = v
+    if v then perfBuildHud() end
+end, "Show FPS and ping")
+mkSlider(MiscTab, "misc/fpssize", "FPS and Ping Size", 60, 160, 100, 1, "%",
+    function(v)
+        Perf.fpsSize = v
+        perfBuildHud()
+    end)
+mkToggle(MiscTab, "misc/no3d", "Disable 3D Render", false, function(v)
+    Perf.no3d = v
+    perfApply3d()
+    perfApplyCap()
+end)
+mkDropdown(MiscTab, "misc/bgcolor", "Background Color", { "White", "Black" }, "White",
+    function(v)
+        Perf.bg = v
+        perfApply3d()
+    end)
+
+-- ── Utility ──
+mkSection(MiscTab, "Utility")
+mkToggle(MiscTab, "misc/antiafk", "Anti AFK", true, function(v) AntiAfk.on = v end)
+
+-- ── Farm HUD ──
+mkSection(MiscTab, "Farm HUD")
+mkToggle(MiscTab, "misc/farmhud", "Farm HUD", false, function(v)
+    FarmHud.on = v
+    Tasks.Wake("farmhud")
+end, "Drag any panel to place it where you like")
+mkToggle(MiscTab, "misc/hidegame", "Hide Game UI", true, function(v) FarmHud.hideGame = v end)
+mkMulti(MiscTab, "misc/huditems", "HUD Items",
+    { "Speed", "Cash", "Stolen", "Showcase" }, function(l)
+        FarmHud.items = listToSet(l)
+    end, nil, { "Speed", "Cash", "Stolen", "Showcase" })
+mkSlider(MiscTab, "misc/cards", "Showcase Cards", 1, 6, 4, 1, "",
+    function(v) FarmHud.cards = v end)
+mkSlider(MiscTab, "misc/hudsize", "HUD Size", 50, 120, 100, 1, "%",
+    function(v)
+        FarmHud.size = v
+        task.spawn(farmHudBuild)
+    end)
+mkDropdown(MiscTab, "misc/cardimage", "Egg Card Image", { "Egg Image", "Pet Image" }, "Egg Image",
+    function(v) FarmHud.image = v end, "Picture used for the showcase cards")
+
+--══════════════════════════ TAB: AUTO HOP ══════════════════════════
 local HopTab = Window:CreateTab({ Name = "Auto Hop", Icon = "🥚" })
+
 mkSection(HopTab, "Egg Finder")
+local hopSyncBusy = false
+local function shallowEq(a, b)
+    if type(a) ~= "table" or type(b) ~= "table" then return a == b end
+    if #a ~= #b then return false end
+    for i = 1, #a do
+        if a[i] ~= b[i] then return false end
+    end
+    return true
+end
+
 mkToggle(HopTab, "hop/on", "Auto Hop", false, function(v)
     AutoHop.on = v
     AutoHop.tOn = os.clock()
@@ -11664,153 +13936,129 @@ mkToggle(HopTab, "hop/on", "Auto Hop", false, function(v)
 end)
 mkDropdown(HopTab, "hop/mode", "Hop Mode",
     { "Until An Egg Matches", "Steal Then Hop", "After A Rare Spawns" },
-    "Until An Egg Matches", function(v) AutoHop.mode = v end)
-mkDropdown(HopTab, "hop/rarity", "Rarity To Wait For", rarityChoices, "Mythic",
-    function(v) AutoHop.waitRarity = v end)
-mkSlider(HopTab, "hop/firstdelay", "First Hop Delay", 5, 120, 20, 1, "s",
-    function(v) AutoHop.firstDelay = v end)
+    "Steal Then Hop", function(v) AutoHop.mode = v end, "Hop when")
+mkDropdown(HopTab, "hop/rarity", "Rarity To Wait For", rarityAny, "Cosmic",
+    function(v) AutoHop.waitRarity = v end, "Rare from")
+mkToggle(HopTab, "hop/sync", "Sync With Auto Steal Filters", true, function(v)
+    AutoHop.sync = v
+    if v then
+        -- saat sync dinyalakan: salin nilai Auto Steal ke filter hop (SILENT)
+        local pairsToSync = {
+            { "hop/hminrar", "farm/minrarity" }, { "hop/hareas", "farm/areas" },
+            { "hop/hspecific", "farm/specific" }, { "hop/hminval", "farm/minvalue" },
+        }
+        for _, p in ipairs(pairsToSync) do
+            local fromEl, toEl = Config.Elements[p[2]], Config.Elements[p[1]]
+            if fromEl and toEl and fromEl.Get then
+                hopSyncBusy = true
+                P(function() toEl:Set(fromEl:Get(), false) end)
+                hopSyncBusy = false
+            end
+        end
+    end
+end, "Changing a filter here also changes it in Auto Steal, and back")
+
+-- sync dua arah: farm -> hop (periodic, SILENT supaya tidak tulis-balik)
+Tasks.Add("hopsync2", 2.0, function()
+    if not AutoHop.sync then return end
+    local pairsToSync = {
+        { "hop/hminrar", "farm/minrarity" }, { "hop/hareas", "farm/areas" },
+        { "hop/hspecific", "farm/specific" }, { "hop/hminval", "farm/minvalue" },
+    }
+    for _, p in ipairs(pairsToSync) do
+        local fromEl, toEl = Config.Elements[p[2]], Config.Elements[p[1]]
+        if fromEl and toEl and fromEl.Get and toEl.Get then
+            local v = fromEl:Get()
+            if v ~= nil and not shallowEq(toEl:Get(), v) then
+                hopSyncBusy = true
+                P(function() toEl:Set(v, false) end)
+                hopSyncBusy = false
+            end
+        end
+    end
+end)
+
+mkDropdown(HopTab, "hop/hminrar", "Min Rarity", rarityAny, "Any",
+    function(v)
+        if not hopSyncBusy and AutoHop.sync then
+            local el = Config.Elements["farm/minrarity"]
+            if el and el.Set then
+                hopSyncBusy = true
+                P(function() el:Set(v, false) end)
+                hopSyncBusy = false
+            end
+        end
+        Steal.minRarity = rarityNumAny(v)
+    end,
+    "Find eggs of the chosen rarity and every rarity above it")
+mkMulti(HopTab, "hop/hareas", "Target Areas", areaNames, function(l)
+    if not hopSyncBusy and AutoHop.sync then
+        local el = Config.Elements["farm/areas"]
+        if el and el.Set then
+            hopSyncBusy = true
+            P(function() el:Set(l, false) end)
+            hopSyncBusy = false
+        end
+    end
+    Steal.areas = listToSet(l)
+end, "Zones", areaNames)
+mkMulti(HopTab, "hop/hspecific", "Target Specific Eggs", eggSpecies, function(l)
+    if not hopSyncBusy and AutoHop.sync then
+        local el = Config.Elements["farm/specific"]
+        if el and el.Set then
+            hopSyncBusy = true
+            P(function() el:Set(l, false) end)
+            hopSyncBusy = false
+        end
+    end
+    Steal.specific = listToSet(l)
+end, "Only these eggs")
+mkSlider(HopTab, "hop/hminval", "Min Value To Find", 0, 100000, 0, 500, "/s",
+    function(v)
+        if not hopSyncBusy and AutoHop.sync then
+            local el = Config.Elements["farm/minvalue"]
+            if el and el.Set then
+                hopSyncBusy = true
+                P(function() el:Set(v, false) end)
+                hopSyncBusy = false
+            end
+        end
+        Steal.minValue = v
+    end,
+    "Skip eggs worth less than this. Drag or type 250k, 50m, 1.5b")
+mkSlider(HopTab, "hop/firstdelay", "First Hop Delay", 3, 10, 5, 0.5, "s",
+    function(v) AutoHop.firstDelay = v end,
+    "Wait after the script loads before the first hop")
 P(function()
     HopTab:AddParagraph({
         Title = "Cara kerja Auto Hop",
-        Text = "Pindah server otomatis sampai ketemu egg sesuai Rarity To Wait For. "
-            .. "Steal Then Hop: pindah setelah tiap sukses curi. After A Rare Spawns: "
-            .. "pindah begitu egg rare+ terdeteksi spawn. Status ON dipulihkan otomatis "
-            .. "setelah pindah server.",
+        Text = "Hop terus selama belum ada egg yang cocok filter (Until An Egg "
+            .. "Matches), pindah setelah berhasil mencuri (Steal Then Hop), atau "
+            .. "pindah begitu egg rarity+ terdeteksi (After A Rare Spawns). "
+            .. "Sync With Auto Steal Filters membuat filter di sini dan di "
+            .. "Farm > Auto Steal selalu sama. Status ON dipulihkan otomatis "
+            .. "setelah pindah server (Auto Load Script).",
     })
 end)
 
-local ProgTab = Window:CreateTab({ Name = "Progress", Icon = "📈" })
-mkSection(ProgTab, "Auto Progression")
-mkToggle(ProgTab, "prog/upbase", "Auto Upgrade Base", false, function(v)
-    Progress.upBase = v Tasks.Wake("progress")
-end)
-mkToggle(ProgTab, "prog/claimcash", "Auto Claim Money", false, function(v)
-    Progress.claimCash = v Tasks.Wake("progress")
-end)
-mkToggle(ProgTab, "prog/claimindex", "Auto Claim Index", false, function(v)
-    Progress.claimIndex = v Tasks.Wake("progress")
-end)
-mkToggle(ProgTab, "prog/buytrail", "Auto Buy Trail", false, function(v)
-    Progress.buyTrail = v Tasks.Wake("progress")
-end)
+--══════════════════════════ PARAGRAF INFO ══════════════════════════
 P(function()
-    ProgTab:AddParagraph({
-        Title = "Catatan",
-        Text = "Paritas tab Progress dari kode baru (SAE v172610). Auto Upgrade "
-            .. "Treadmill tetap ada di tab Farm. Auto Buy Trail membeli semua trail "
-            .. "yang tersedia di asset Directory.",
+    FarmTab:AddParagraph({
+        Title = "ThorHub v3.0 — basis kode baru",
+        Text = "Struktur menu & metode engine dipetakan 1:1 dari kode baru "
+            .. "Chilli Hub (SAE v172610): 8 tab, Delivery 3-mode (Tween / "
+            .. "Instant Steps / Fast Tween), Instant Steal V3 via Admin "
+            .. "Treadmill, tab Event lengkap, ESP/Combat, Predictor, dan "
+            .. "Steal Panel hijack HUD game (tombol toggle di kolom tombol "
+            .. "kanan game). Jangan jalankan bersama script hub lain. Log "
+            .. "ThorHub selalu berawalan [ThorHub].",
     })
 end)
-
-local ConfigTab = Window:CreateTab({ Name = "Config", Icon = "💾" })
-
-local configListLabel = nil
-local function refreshConfigLabel()
-    if not configListLabel then return end
-    local names = Config.FileList()
-    local line = "Configs tersedia: " .. table.concat(names, ", ")
-    P(function() configListLabel:Set(line) end)
-end
-
-mkSection(ConfigTab, "Defaults")
-mkButton(ConfigTab, "Reset to Defaults", function()
-    Config.Data = {}
-    Notify("Config", "Semua pengaturan direset (reload script untuk efek penuh)", 4)
-end)
-mkButton(ConfigTab, "Turn Off All Toggles", function() Config.WriteAllOff() end)
-
-mkSection(ConfigTab, "Configs")
-configListLabel = ConfigTab:AddLabel({ Text = "Configs: memuat..." })
-mkToggle(ConfigTab, "cfg/autosave", "Auto Save Config", false, function(v) Config.AutoSave = v Config.SaveState() end)
-mkToggle(ConfigTab, "cfg/autoload", "Auto Load Config", true, function(v) Config.AutoLoad = v Config.SaveState() end)
-mkInput(ConfigTab, "cfg/newname", "New Config Name", "nama config baru...")
-mkButton(ConfigTab, "Create New Config", function()
-    local el = Config.Elements["cfg/newname"]
-    local name = el and tostring(el:Get() or "") or ""
-    if name == "" then Notify("Config", "Isi nama dulu", 3) return end
-    Config.Name = name
-    Config.Save(name)
-    Config.SaveState()
-    refreshConfigLabel()
-    Notify("Config", "Config dibuat: " .. name, 3)
-end)
-mkButton(ConfigTab, "Save Config", function()
-    Config.Save(Config.Name)
-    Notify("Config", "Tersimpan ke: " .. Config.Name, 3)
-    refreshConfigLabel()
-end)
-mkButton(ConfigTab, "Load Config", function()
-    local el = Config.Elements["cfg/newname"]
-    local name = el and tostring(el:Get() or "") or ""
-    if name == "" then name = Config.Name end
-    local ok = Config.Load(name, true)
-    Notify("Config", ok and ("Dimuat: " .. name) or "Gagal memuat (cek nama)", 4)
-end)
-mkButton(ConfigTab, "Delete Config", function()
-    local el = Config.Elements["cfg/newname"]
-    local name = el and tostring(el:Get() or "") or ""
-    if name == "" then Notify("Config", "Isi nama config yang mau dihapus", 3) return end
-    Config.Delete(name)
-    refreshConfigLabel()
-    Notify("Config", "Dihapus (kalau ada): " .. name, 3)
-end)
-mkButton(ConfigTab, "Set Startup Config", function()
-    local el = Config.Elements["cfg/newname"]
-    local name = el and tostring(el:Get() or "") or Config.Name
-    Config.Startup = name
-    Config.SaveState()
-    Notify("Config", "Startup config: " .. name, 3)
-end)
-
-mkSection(ConfigTab, "Import / Export")
-mkButton(ConfigTab, "Export Config", function()
-    local payload = { __thorhub = true, States = Config.Data }
-    local json = jsonEnc(payload)
-    if not json then Notify("Config", "Encode gagal", 3) return end
-    if setclipboard then
-        pcall(setclipboard, json)
-        Notify("Config", "Config disalin ke clipboard", 3)
-    else
-        Notify("Config", "Executor tidak punya setclipboard", 3)
-    end
-end)
-mkInput(ConfigTab, "cfg/import", "Import Config Text", "tempel JSON config di sini...")
-mkButton(ConfigTab, "Import Config", function()
-    local el = Config.Elements["cfg/import"]
-    local json = el and tostring(el:Get() or "") or ""
-    if json == "" then Notify("Config", "Tempel JSON dulu", 3) return end
-    local data = jsonDec(json)
-    if not data or type(data.States) ~= "table" then Notify("Config", "JSON tidak valid", 3) return end
-    for k, v in pairs(data.States) do Config.Set(k, v) end
-    for key, value in pairs(data.States) do
-        local elem = Config.Elements[key]
-        if elem and elem.Set then P(function() elem:Set(value, false) end) end
-    end
-    Notify("Config", "Config diimpor", 3)
-end)
-
-mkSection(ConfigTab, "Info")
-ConfigTab:AddParagraph({
-    Title = "ThorHub — Auto Farm (Steal an Egg)",
-    Text = "Edisi Auto Farm: hanya fitur farming + UI floating ThorUi. "
-        .. "Semua fitur native, tanpa obfuscate, tanpa promosi. Basis: kode baru "
-        .. "Chilli (SAE v172610, Okt 2026) - fitur farm diparitaskan penuh. "
-        .. "PENTING: jalankan script ini SAJA — jangan bersamaan dengan script hub "
-        .. "lain (mis. Chilli Hub); dua engine farm yang jalan bareng bisa saling "
-        .. "ganggu dan memunculkan error. Error console dengan nama script acak "
-        .. "(kode LPH, huruf acak 20+ karakter) berasal dari script Chilli Hub lain "
-        .. "yang masih berjalan di executor (cek tab Auto-Exec), BUKAN dari ThorHub - "
-        .. "log ThorHub selalu berawalan [ThorHub]. Data game: Directory "
-        .. (Repo.DirectoryOK and "OK" or "n/a") .. ", Save replica "
-        .. (Repo.SaveOK and "OK" or "n/a") .. ", Filesystem "
-        .. (FS.ok and "OK" or "n/a") .. ".",
-})
 
 --────────────────────────────[ BOOT SEQUENCE ]────────────────────────────
 
-refreshConfigLabel()
-
--- muat config tersimpan
+-- muat config tersimpan (Auto Load & Auto Save default ON — ala kode baru)
+Config.AutoSave = true
 Config.LoadState()
 if Config.AutoLoad and FS.ok then
     local target = Config.Startup or Config.Name
@@ -11824,14 +14072,9 @@ if Config.AutoLoad and FS.ok then
     end
 end
 
--- Steal Panel: pulihkan status terbuka (default terbuka, ala script asli)
+-- Steal Panel: pulihkan status terbuka (pola RestoreStealPanel asli)
 task.delay(1.2, function()
-    local saved = Config.Get("panel/open")
-    if saved == nil and Gill then saved = Gill.__THORHUB_PANEL_OPEN end
-    if saved ~= false then
-        StealPanel.Show()
-        print("[ThorHub] 2 UI aktif: menu utama + panel daftar telur (ala script asli)")
-    end
+    StealPanel.Restore()
 end)
 
 -- Auto Hop: pulihkan ON setelah hop server (flag genv, basis kode baru)
@@ -11839,13 +14082,22 @@ if type(Gill) == "table" and Gill.__THORHUB_AUTOHOP then
     task.delay(1.5, function()
         local el = Config.Elements["hop/on"]
         if el and el.Set then
-            P(function() el:Set(true, true) end)
+            P(function() el:Set(true, false) end)
+            AutoHop.on = true
+            Tasks.Wake("autohop")
         end
     end)
 end
 
--- auto load setelah teleport (queueReload cek queue_on_teleport sendiri)
-queueReload()
+-- auto load setelah teleport — hanya bila Auto Load Script ON (kode baru)
+if ServerX.autoLoad then
+    queueReload()
+end
+
+-- refresh daftar pemain untuk Hit Player (periodic — aman utk semua runtime)
+Tasks.Add("refp", 15.0, function()
+    refreshPlayerNames()
+end)
 
 -- reset visibility saat respawn
 LocalPlayer.CharacterAdded:Connect(function(char)
@@ -11858,13 +14110,15 @@ end)
 local function DestroyAll()
     pcall(function() StealPanel.Destroy() end)
     Character.ApplyInvisibility(false)
+    perfApply3d()
+    if setfpscap then pcall(setfpscap, 240) end
     if ThorUI then P(function() ThorUI:Destroy() end) end
 end
 
 Gill.__THORHUB_AF_LOADED = true
 Gill.__THORHUB_AF_DESTROY = DestroyAll
 
-Notify("⚡ ThorHub", "Auto Farm siap! Menu dibangun 100% dari ThorUi.", 6)
+Notify("⚡ ThorHub", "v3.0 siap! Menu 8 tab persis kode baru + Steal Panel hijack HUD.", 6)
 if not Repo.DirectoryOK then
     task.delay(2, function()
         Notify("ThorHub", "Asset Directory tidak ketemu — beberapa filter memakai fallback", 6)
@@ -11877,7 +14131,7 @@ if not Repo.SaveOK then
 end
 end)
 if bootOK then
-    print("[ThorHub] Menu siap. Buka/tutup: tombol petir melayang atau RightControl.")
+    print("[ThorHub] v3.0 menu siap. Buka/tutup: tombol petir melayang atau RightControl.")
 else
     warn("[ThorHub] BOOT GAGAL: " .. tostring(bootErr))
     pcall(function()
