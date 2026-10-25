@@ -34,7 +34,7 @@ for attempt = 1, 3 do
             and not string.match(body, "^%s*[45]%d%d") then
             if not string.find(body, "THORHUB-EOF", -60, true) then
                 last = "download tidak lengkap — file terpotong (diterima "
-                    .. #body .. " bytes, file utuh sekitar 337 ribu bytes)"
+                    .. #body .. " bytes, file utuh sekitar 347 ribu bytes)"
             else
                 local chunk, err = loadstring(body)
                 if chunk then

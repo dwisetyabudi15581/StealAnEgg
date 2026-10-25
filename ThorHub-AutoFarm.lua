@@ -1,11 +1,21 @@
---[[ THORHUB - STEAL AN EGG | v3.2 (build ringkas + struktur executor-safe)
-  Isi sama dengan v3.0 (rewrite persis kode baru StealAnEggg, SAE v172610):
+--[[ THORHUB - STEAL AN EGG | v3.3 (sync 1:1 dengan StealAnEggg — remote terverifikasi)
+  Basis v3.2 + perbaikan sinkronisasi 1:1 ke mekanik script asli (Chilli/StealAnEggg):
   menu 8 tab 1:1 (Farm/Event/Admin Abuse/Player/Predictor/Server/Misc/Auto Hop),
   Steal Panel metode hijack HUD game, Delivery 3-mode, Instant Steal V3,
   ESP/Combat/Performance/Server, Auto Hop sync filter.
-  v3.2 = v3.0 dipadatkan + section dibungkus do-block: local utama turun
-  204 -> 128 (limit compiler executor 200; v3.0/v3.1 gagal "Out of local
-  registers"). Struktur do-block tidak mengubah perilaku sama sekali.
+  v3.3 memulihkan remote & mekanik yang terverifikasi dari script asli:
+  - serangan (bat/tool): RE/ToolTrigger/Trigger + RE/BatSwing/Trigger
+  - Ghost Dog Quest: RF/GhostDogQuest/Talk/Dive/Cast/Collect/Claim/Surface
+  - Ghouler vacuum: RE/GhostBoss/Suction; souls: RF/HalloweenDimension/AskTradeSouls
+  - Island Wars: RF/IslandWars/Fetch + RE/IslandWars/Use/State/Moment
+  - Capture The Egg: RE/EggCapture/StandingsRefreshed + scan egg event
+  - Minigame Egg: scan model Minigame + StealPrompt (bukan atribut tebakan)
+  - Egg/Rift Predictor: RF/LiveEvents/FetchRunning + RE/LiveEvents/Began/Ended
+  - Fishing: RF/Fishing/Cast(luck) + Reel; claim cash: RF/AwayEarnings/PendingCheck
+  - deteksi monster Halloween: nama asli (Candy Corn/Hollow Bat/Scarecrow/
+    Chest Mimic/Pumpkin Golem/Soul Phantom) + cek Humanoid hidup
+  - fix toggle mati: Steal Missing Halloween Index & Preview Card kini berfungsi
+  - fix Anti Trap (kondisi selah false), hwplace kini place+hatch missing index
   Loader: loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/ThorHub-Loader.lua"))()
 ]]
 
@@ -18,7 +28,7 @@ local old = Gill.__THORHUB_AF_DESTROY
 if type(old) == "function" then pcall(old) end
 end
 if type(print) == "function" then
-print("[ThorHub] v3.2 dimuat (rewrite basis kode baru StealAnEggg — menu 8 tab + Steal Panel hijack HUD)")
+print("[ThorHub] v3.3 dimuat (sync 1:1 — remote & mekanik terverifikasi StealAnEggg)")
 end
 local Services = {}
 local function S(name)
@@ -942,6 +952,28 @@ ThorUI:Notify({ Title = title or "ThorHub", Content = text or "", Duration = dur
 end)
 end
 end
+-- DISPATCHER (single loop) — tanpa ini Tasks.Add tidak pernah dijalankan!
+-- Satu koneksi Heartbeat menjalankan semua worker sesuai intervalnya;
+-- tiap worker dibungkus pcall + flag busy supaya tidak tumpang tindih.
+RunService.Heartbeat:Connect(function()
+local now = os.clock()
+for _, t in pairs(Tasks.byName) do
+if not t.busy and now >= t.next then
+t.next = now + t.interval
+t.busy = true
+task.spawn(function()
+local ok, err = pcall(t.fn)
+if not ok then
+if not t.__warned then
+t.__warned = true
+warn("[ThorHub] task '" .. t.name .. "' error: " .. tostring(err))
+end
+end
+t.busy = false
+end)
+end
+end
+end)
 local FS = { ok = false }
 do
 local base = "ThorHub"
@@ -1472,6 +1504,7 @@ pullSpeed = 3300,
 adminSteal = false,
 v3 = false,
 hwInstant = true,
+hwAuto = false,
 agPanel = true,
 busy = false, bad = {}, stolen = 0, best = nil, bestRank = -1,
 history = {}, lastDeliver = 0, hwDelivered = 0,
@@ -2223,6 +2256,61 @@ Tasks.Status("steal", "Idle  |  " .. total .. " egg terlihat, semua tercegat fil
 end
 end
 end)
+-- Auto Steal Halloween Eggs mandiri (toggle Event > Halloween Dimension):
+-- saat Auto Steal utama OFF, egg Halloween tetap dicuri lewat jalur ini.
+-- Pola asli: cari egg terdekat yang lolos filter, dekati, tembak prompt,
+-- lalu antar ke SafeZone Halloween (via deliverEgg cabang Halloween).
+Tasks.Add("hwsteal", 1.0, function()
+Steal.carryWatch = Steal.hwAuto == true
+if not Steal.hwAuto then return end
+if Steal.on then return end
+if Steal.busy then return end
+local root = Movement.Root()
+if not root then return end
+local best, bd = nil, math.huge
+for _, egg in ipairs(EggState.HalloweenEggs()) do
+if stealFilterOk(egg) and egg.Pos then
+local d = (egg.Pos - root.Position).Magnitude
+if d < bd then best, bd = egg, d end
+end
+end
+if not best then return end
+Steal.busy = true
+task.spawn(function()
+local claimed = Movement.Claim("hwsteal")
+Tasks.Status("hwsteal", "Stealing this Halloween egg next")
+local model, prompt = best.Model, best.Prompt
+local deadline = os.clock() + 30
+while os.clock() < deadline and not isCarrying() do
+local r2 = Movement.Root()
+if not r2 then break end
+if not model or not model.Parent then break end
+local pos = P(function() return model:GetPivot().Position end)
+if not pos then break end
+local d = pos - r2.Position
+local step = (Steal.hwInstant ~= false) and 60 or 40
+if d.Magnitude < 5 then
+if prompt and prompt.Parent then
+P(function() firePromptInstance(prompt) end)
+end
+task.wait(0.1)
+else
+Movement.StepTo(pos + Vector3.new(0, 3, 0), step)
+end
+task.wait()
+end
+if isCarrying() then
+stealSuccess(best)
+deliverEgg(best)
+else
+Tasks.Status("hwsteal", "Halloween steal gagal")
+if claimed then Movement.Release("hwsteal") end
+Steal.busy = false
+return
+end
+if claimed then Movement.Release("hwsteal") end
+end)
+end)
 end
 Repo.Connect("RE/EggWorld/FieldEggRedeemVerdict", function(data)
 Steal.lastDeliver = os.clock()
@@ -2884,8 +2972,7 @@ local pos = root.Position
 for _, inst in ipairs(Scan.Workspace()) do
 if inst:IsA("BasePart") then
 local n = string.lower(inst.Name or "")
-if (string.find(n, "trap", 1, true) or string.find(n, "snare", 1, true))
-and not inst.CanCollide == nil then
+if (string.find(n, "trap", 1, true) or string.find(n, "snare", 1, true)) then
 local rel = P(function() return (inst.Position - pos).Magnitude end)
 if rel and rel < 12 then
 P(function()
@@ -3208,6 +3295,14 @@ return best, root
 end
 return nil, nil
 end
+local combatLastSwing = 0
+local function combatSwing()
+local now = os.clock()
+if now - combatLastSwing < 0.3 then return end
+combatLastSwing = now
+Repo.Fire("RE/BatSwing/Trigger")
+Repo.Fire("RE/ToolTrigger/Trigger")
+end
 Tasks.Add("combat", 0.25, function()
 if not Combat.on then return end
 local plr, root = combatFindTarget()
@@ -3224,14 +3319,19 @@ task.spawn(function()
 local pos = P(function() return root.Position end)
 if not pos then return end
 if Combat.aura then
-local equipped = combatEquipWeapon()
-if equipped then
-local tool = P(function()
-local ch = LocalPlayer.Character
-return ch and ch:FindFirstChildOfClass("Tool")
+combatEquipWeapon()
+for _, p2 in ipairs(Players:GetPlayers()) do
+if p2 ~= LocalPlayer and p2.Character then
+local h2 = P(function()
+return p2.Character:FindFirstChild("HumanoidRootPart")
 end)
-if tool and (P(function() return (pos - myRoot.Position).Magnitude < 14 end)) then
-P(function() tool:Activate() end)
+if h2 then
+local pp2 = P(function() return h2.Position end)
+if pp2 and (pp2 - myRoot.Position).Magnitude <= (Combat.sweep or 60) then
+combatSwing()
+break
+end
+end
 end
 end
 return
@@ -3261,12 +3361,8 @@ Combat.swapIdx = (Combat.swapIdx == 2) and 1
 or ((Combat.weapons[2] and Combat.weapons[2] ~= "") and 2 or 1)
 combatEquipWeapon()
 end
-local tool = P(function()
-local ch = LocalPlayer.Character
-return ch and ch:FindFirstChildOfClass("Tool")
-end)
-if tool and d < 16 then
-P(function() tool:Activate() end)
+if d < (Combat.sweep or 60) * 0.35 + 8 then
+combatSwing()
 end
 end)
 end)
@@ -3396,156 +3492,205 @@ take = false,
 holdHeight = 45,
 keepAway = 45,
 holding = false,
+busy = false,
+controlling = false,
+rank = nil,
+seconds = nil,
 }
-local function captureEggUid()
-local uid = P(function() return workspace:GetAttribute("Event_CaptureTheEggUid") end)
-if type(uid) == "string" and uid ~= "" then return uid end
+Repo.Connect("RE/EggCapture/StandingsRefreshed", function(data)
+local entries = (type(data) == "table" and (data.Entries or data.Standings or data)) or nil
+if type(entries) ~= "table" then return end
+for _, p in ipairs(entries) do
+if type(p) == "table" and tonumber(p.UserId) == LocalPlayer.UserId then
+Capture.rank = tonumber(p.Rank)
+Capture.seconds = tonumber(p.Seconds)
+Capture.controlling = p.Controlling == true or p.IsHolding == true
+end
+end
+end)
+local function findEventEggHolder()
+for _, plr in ipairs(Players:GetPlayers()) do
+if plr ~= LocalPlayer and plr.Character then
+if plr.Character:FindFirstChildOfClass("Tool") then
+return plr
+end
+end
+end
 return nil
 end
-local function captureFindModel(uid)
-if not uid then return nil end
-for _, inst in ipairs(Scan.Workspace()) do
-if inst:IsA("Model") then
-local a = P(function() return inst:GetAttribute("Uid")
-or inst:GetAttribute("CaptureUid") end)
-if a == uid then return inst end
+local function findEventEggModel()
+local worldEggs = Repo.WorldEggs()
+for _, m in ipairs(workspace:GetChildren()) do
+if m:IsA("Model") and m ~= worldEggs then
+local prompt = P(function()
+return m:FindFirstChild("StealPrompt", true)
+or m:FindFirstChildWhichIsA("ProximityPrompt", true)
+end)
+local isEvent = prompt and P(function()
+return m:GetAttribute("EventEgg")
+or m.Name:find("Event", 1, true)
+or m.Name:find("Capture", 1, true)
+end)
+if prompt and isEvent and P(function() return prompt.Enabled end) then
+return m
+end
 end
 end
 return nil
 end
-Tasks.Add("capture", 0.35, function()
+Tasks.Add("capture", 0.8, function()
 if not Capture.on then return end
-local uid = captureEggUid()
-if not uid then Tasks.Status("capture", "Waiting for Capture The Egg event") return end
-local model = captureFindModel(uid)
+if Capture.busy then return end
+if Capture.controlling then
+Tasks.Status("capture", "Holding egg! Rank " .. tostring(Capture.rank or "-"))
 local root = Movement.Root()
-if not root then return end
-local pos = nil
-if model then
-pos = P(function() return model:GetPivot().Position end)
-end
-if not pos and Capture.take then
+local char = LocalPlayer.Character
+local carrying = char and P(function() return char:FindFirstChildOfClass("Tool") end)
+if root and carrying then
+local nearest, nd = nil, math.huge
 for _, plr in ipairs(Players:GetPlayers()) do
-if plr ~= LocalPlayer then
-local tool = P(function()
-local ch = plr.Character
-return ch and ch:FindFirstChildOfClass("Tool")
+if plr ~= LocalPlayer and plr.Character then
+local hrp = P(function()
+return plr.Character:FindFirstChild("HumanoidRootPart")
 end)
-local tUid = tool and P(function() return tool:GetAttribute("Uid") end)
-if tUid == uid then
-pos = P(function() return plr.Character
-and plr.Character:FindFirstChild("HumanoidRootPart").Position end)
-break
+if hrp then
+local pp = P(function() return hrp.Position end)
+if pp then
+local d = (pp - root.Position).Magnitude
+if d < nd then nearest, nd = pp, d end
 end
 end
 end
 end
-if not pos then Tasks.Status("capture", "Egg not visible") return end
-local myPos = root.Position
-local away = Vector3.new(0, 0, 0)
-for _, plr in ipairs(Players:GetPlayers()) do
-if plr ~= LocalPlayer then
-local pp = P(function() return plr.Character
-and plr.Character:FindFirstChild("HumanoidRootPart").Position end)
-if pp and (pp - myPos).Magnitude < Capture.keepAway then
-away = away + (myPos - pp)
+local goal = root.Position
+if nearest and nd < Capture.keepAway then
+goal = root.Position + (root.Position - nearest).Unit * Capture.keepAway
 end
+goal = Vector3.new(goal.X, math.max(goal.Y, Capture.holdHeight), goal.Z)
+Movement.StepTo(goal, 25)
 end
-end
-local target = Vector3.new(pos.X, Capture.holdHeight, pos.Z)
-if away.Magnitude > 0.01 then
-target = myPos + away.Unit * 20 + Vector3.new(0, Capture.holdHeight - myPos.Y, 0)
-end
-P(function() root.CFrame = CFrame.new(target) end)
 Capture.holding = true
-Tasks.Status("capture", "Holding event egg at " .. Capture.holdHeight .. " studs")
+return
+end
+Capture.holding = false
+if Movement.Owner and Movement.Owner ~= "capture" then return end
+Capture.busy = true
+task.spawn(function()
+if Movement.Claim("capture") then
+local egg = findEventEggModel()
+if egg then
+Tasks.Status("capture", "Event egg terlihat, menuju...")
+local pos = P(function() return egg:GetPivot().Position end)
+if pos then
+Movement.FlyTo(pos, function()
+return LocalPlayer.Character
+and LocalPlayer.Character:FindFirstChildOfClass("Tool") ~= nil
+end, 45)
+local prompt = P(function()
+return egg:FindFirstChild("StealPrompt", true)
+or egg:FindFirstChildWhichIsA("ProximityPrompt", true)
 end)
-local Minigame = { on = true }
-Tasks.Add("minigame", 1.0, function()
+if prompt then P(function() firePromptInstance(prompt) end) end
+end
+elseif Capture.take then
+local holder = findEventEggHolder()
+if holder and holder.Character then
+Tasks.Status("capture", "Rebut dari " .. tostring(holder.Name))
+local hrp = P(function()
+return holder.Character:FindFirstChild("HumanoidRootPart")
+end)
+if hrp then
+Movement.FlyTo(hrp.Position, function()
+return not holder.Parent or not holder.Character
+end, 50)
+Repo.Fire("RE/BatSwing/Trigger")
+Repo.Fire("RE/ToolTrigger/Trigger")
+end
+else
+Tasks.Status("capture", "Waiting for Capture The Egg")
+end
+else
+Tasks.Status("capture", "Waiting for Capture The Egg")
+end
+Movement.Release("capture")
+end
+Capture.busy = false
+end)
+end)
+local Minigame = { on = true, busy = false }
+Tasks.Add("minigame", 1.2, function()
 if not Minigame.on then return end
-local rlgl = P(function() return workspace:GetAttribute("Event_RedLightGreenLight") end)
-local trex = P(function() return workspace:GetAttribute("Event_TrexRun") end)
-if not (rlgl == true or trex == true) then return end
+if Minigame.busy then return end
 if Steal.on and Steal.busy then return end
+if Movement.Owner and Movement.Owner ~= "minigame" then return end
+local worldEggs = Repo.WorldEggs()
 local root = Movement.Root()
 if not root then return end
-for _, inst in ipairs(Scan.Workspace()) do
-local isMg = P(function()
-return inst:IsA("Model")
-and (inst:GetAttribute("MinigameEgg") == true
-or inst:GetAttribute("EventEgg") == true
-or (string.find(inst.Name, "Minigame", 1, true) ~= nil
-and inst:FindFirstChildOfClass("ProximityPrompt", true) ~= nil))
+for _, m in ipairs(workspace:GetChildren()) do
+if m:IsA("Model") and m ~= worldEggs then
+local prompt = P(function() return m:FindFirstChild("StealPrompt", true) end)
+local isMg = prompt and P(function()
+return prompt:IsA("ProximityPrompt") and prompt.Enabled
+and (m:GetAttribute("Minigame")
+or m.Name:find("Minigame", 1, true))
 end)
-if isMg then
-local pos = P(function() return inst:GetPivot().Position end)
-local prompt = P(function() return inst:FindFirstChildOfClass("ProximityPrompt", true) end)
-if pos and prompt then
-if (pos - root.Position).Magnitude > 6 then
-P(function() root.CFrame = CFrame.new(pos + Vector3.new(0, 2.5, 0)) end)
-end
+if prompt and isMg then
+Minigame.busy = true
+task.spawn(function()
+if Movement.Claim("minigame") then
+local pos = P(function() return m:GetPivot().Position end)
+if pos then
+Movement.FlyTo(pos, function()
+return LocalPlayer.Character
+and LocalPlayer.Character:FindFirstChildOfClass("Tool") ~= nil
+end, 45)
 P(function() firePromptInstance(prompt) end)
 Tasks.Status("minigame", "Going for the minigame egg")
 end
-break
+Movement.Release("minigame")
+end
+Minigame.busy = false
+end)
+return
+end
 end
 end
 end)
 local CIW = { on = false, target = "Enemies And Base" }
-Tasks.Add("ciw", 1.2, function()
+Repo.Connect("RE/IslandWars/State", function(state)
+if type(state) == "table" then
+Tasks.Status("ciw", tostring(state.Status or "Island Wars aktif"))
+end
+end)
+Repo.Connect("RE/IslandWars/Moment", function(moment)
+if CIW.on and type(moment) == "table" then
+local pos = moment.Position and Vector3.new(
+tonumber(moment.Position.X) or 0,
+tonumber(moment.Position.Y) or 0,
+tonumber(moment.Position.Z) or 0)
+if pos and Movement.Claim("island") then
+task.spawn(function()
+Movement.FlyTo(pos, nil, 45)
+Repo.Invoke("RF/IslandWars/Fetch")
+Repo.Fire("RE/IslandWars/Use")
+Movement.Release("island")
+end)
+end
+end
+end)
+Tasks.Add("ciw", 3.0, function()
 if not CIW.on then return end
-local active = P(function() return workspace:GetAttribute("Event_CursedIslandWars") end)
-if active ~= true then Tasks.Status("ciw", "Waiting for Cursed Island Wars") return end
-local root = Movement.Root()
-if not root then return end
-local best, bestD, isWall = nil, math.huge, false
-for _, inst in ipairs(Scan.Workspace()) do
-local isBase = P(function()
-return inst:IsA("BasePart") and (string.find(inst.Name, "Wall", 1, true)
-or string.find(inst.Name, "Crystal", 1, true))
-end)
-local isEnemy = P(function() return inst:IsA("Model")
-and inst:GetAttribute("Team") ~= nil end)
-if isBase or isEnemy then
-local pos = P(function()
-if inst:IsA("BasePart") then return inst.Position end
-return inst:GetPivot().Position
-end)
-if pos then
-local d = (pos - root.Position).Magnitude
-if d < bestD then best, bestD, isWall = inst, d, isBase end
+local state = Repo.Invoke("RF/IslandWars/Fetch")
+if type(state) == "table" then
+Tasks.Status("ciw", "Island Wars: " .. tostring(state.Status or state.Kind or "aktif")
+.. (CIW.target and ("  |  " .. CIW.target) or ""))
+else
+Tasks.Status("ciw", "Waiting for Cursed Island Wars")
 end
-end
-end
-if not best then Tasks.Status("ciw", "No target on the island") return end
-local mode = CIW.target
-if isWall and mode == "Enemies And Base" then
-end
-local pos = P(function()
-if best:IsA("BasePart") then return best.Position end
-return best:GetPivot().Position
-end)
-Tasks.Status("ciw", "Attacking " .. tostring(best.Name))
-if bestD > 8 then
-local delta = pos - root.Position
-P(function()
-root.CFrame = CFrame.new(root.Position + delta.Unit * math.min(bestD - 4, 60))
-end)
-end
-local tool = P(function()
-local ch = LocalPlayer.Character
-return ch and ch:FindFirstChildOfClass("Tool")
-end)
-if tool then P(function() tool:Activate() end) end
 end)
 local Hollow = { on = false, speed = 300, powerups = true }
 Tasks.Add("hollow", 0.6, function()
 if not Hollow.on then return end
-local inRace = P(function() return workspace:GetAttribute("TheHollowActive") end)
-if inRace ~= true then
-Tasks.Status("hollow", "Waiting for The Hollow race")
-return
-end
 local root = Movement.Root()
 if not root then return end
 local best, bestD = nil, math.huge
@@ -3561,12 +3706,32 @@ if d < bestD and d > 4 then best, bestD = pos, d end
 end
 end
 end
-if best then
-local delta = best - root.Position
+if not best then Tasks.Status("hollow", "Waiting for The Hollow race") return end
+local goal = best
+if Hollow.powerups then
+for _, inst in ipairs(Scan.Workspace()) do
+local ok = P(function() return inst:IsA("BasePart")
+and (string.find(inst.Name, "Power", 1, true)
+or string.find(inst.Name, "Boost", 1, true)
+or inst:GetAttribute("PowerUp") == true) end)
+if ok then
+local pos = P(function() return inst.Position end)
+if pos then
+local d = (pos - root.Position).Magnitude
+if d < 60 and d < bestD then
+goal, bestD = pos, d
+Tasks.Status("hollow", "Racing  |  taking a power-up")
+end
+end
+end
+end
+end
+local delta = goal - root.Position
 P(function()
 root.CFrame = CFrame.new(root.Position + delta.Unit
 * math.min(delta.Magnitude, Hollow.speed * 0.55))
 end)
+if goal == best then
 Tasks.Status("hollow", "Racing at " .. Hollow.speed .. " st/s")
 end
 end)
@@ -3577,7 +3742,14 @@ tp = true,
 souls = false,
 ghostTarget = "Rarest First",
 speed = 300,
+busy = false,
 }
+Repo.Connect("RE/TrainEvent/State", function(state)
+if type(state) == "table" then
+Tasks.Status("express", tostring(state.Status or state.Kind or "Train event"))
+end
+end)
+local expressLastSwing = 0
 Tasks.Add("express", 0.8, function()
 if not Express.on then return end
 local root = Movement.Root()
@@ -3596,7 +3768,24 @@ if d < bestD and d > 5 then best, bestD = pos, d end
 end
 end
 end
-if not best then Tasks.Status("express", "No ghosts around the tracks") return end
+if not best then
+local rail = P(function()
+return workspace:FindFirstChild("BoardRailStart", true)
+or workspace:FindFirstChild("ReturnRailStart", true)
+end)
+if rail then
+local rPos = P(function()
+if rail:IsA("Model") then return rail:GetPivot().Position else return rail.Position end
+end)
+if rPos then
+Tasks.Status("express", "No ghosts  |  boarding the Phantom Express")
+Movement.FlyTo(rPos, nil, 40)
+P(function() Repo.Invoke("RF/TrainEvent/Action", "Board") end)
+return
+end
+end
+Tasks.Status("express", "No ghosts around the tracks") return
+end
 Tasks.Status("express", Express.vacuum and "Vacuuming ghosts" or "Chasing ghosts")
 if Express.tp then
 P(function() root.CFrame = CFrame.new(best + Vector3.new(0, 3, 0)) end)
@@ -3607,13 +3796,20 @@ root.CFrame = CFrame.new(root.Position + delta.Unit
 * math.min(delta.Magnitude, Express.speed * 0.6))
 end)
 end
-local tool = P(function()
-local ch = LocalPlayer.Character
-return ch and ch:FindFirstChildOfClass("Tool")
-end)
-if tool then P(function() tool:Activate() end) end
+local now = os.clock()
+if now - expressLastSwing >= 0.6 then
+expressLastSwing = now
+if Express.vacuum then
+Repo.Fire("RE/GhostBoss/Suction")
+end
+Repo.Fire("RE/ToolTrigger/Trigger")
+Repo.Fire("RE/BatSwing/Trigger")
+end
 if Express.souls then
-P(function() Repo.Invoke("RF/PhantomExpress/AskTradeSouls") end)
+local ok = Repo.Invoke("RF/HalloweenDimension/AskTradeSouls")
+if ok == nil then
+P(function() Repo.Fire("RE/HalloweenDimension/TradeSouls") end)
+end
 end
 end)
 local HwMon = {
@@ -3635,6 +3831,23 @@ local HW_MON_PART = {
 ["Scarecrow (+28 Candy)"] = "Scarecrow", ["Chest Mimic (+28 Candy)"] = "Mimic",
 ["Pumpkin Golem (+65 Candy)"] = "Pumpkin", ["Soul Phantom (+65 Candy)"] = "Phantom",
 }
+local HW_MON_CANDY = {
+["CandyCorn"] = 12, ["Bat"] = 12, ["Scarecrow"] = 28,
+["Mimic"] = 28, ["Pumpkin"] = 65, ["Phantom"] = 65,
+}
+local Monsters_names = {
+["Candy Corn"] = true, ["Hollow Bat"] = true,
+["Scarecrow"] = true, ["Chest Mimic"] = true,
+["Pumpkin Golem"] = true, ["Soul Phantom"] = true,
+}
+local hwMonLastSwing = 0
+local function hwMonSwing()
+local now = os.clock()
+if now - hwMonLastSwing < 0.12 then return end
+hwMonLastSwing = now
+Repo.Fire("RE/ToolTrigger/Trigger")
+Repo.Fire("RE/BatSwing/Trigger")
+end
 local function hwMonSelected(name)
 if next(HwMon.kill) == nil then return true end
 return HwMon.kill[name] == true
@@ -3650,23 +3863,34 @@ local root = Movement.Root()
 if not root then return end
 local best, bestD = nil, math.huge
 for _, inst in ipairs(Scan.Workspace()) do
-local ok = P(function() return inst:IsA("Model") and (
-inst:GetAttribute("Monster") == true
-or inst:GetAttribute("IsMonster") == true
-or string.find(inst.Name, "Monster", 1, true) ~= nil) end)
+local ok = P(function()
+if not (inst:IsA("Model") and inst.Parent) then return false end
+local n = inst.Name
+if Monsters_names[n] == true then return true end
+return n:find("Monster", 1, true) ~= nil
+and inst:GetAttribute("MonsterSize") ~= nil
+end)
 if ok then
 local nm = tostring(inst.Name)
-local match = false
-for label, part in pairs(HW_MON_PART) do
-if hwMonSelected(label) and string.find(nm, part, 1, true) then
-match = true break
+local part = nil
+for label, p in pairs(HW_MON_PART) do
+if hwMonSelected(label) and string.find(nm, p, 1, true) then
+part = p break
 end
 end
-if match then
+if part then
+local hum = inst:FindFirstChildOfClass("Humanoid")
+local hp = hum and P(function() return hum.Health end)
+if hp and hp > 0 then
 local pos = P(function() return inst:GetPivot().Position end)
 if pos then
 local d = (pos - root.Position).Magnitude
-if d < bestD then best, bestD = pos, d end
+local k = d
+if HwMon.order == "Most Tokens" then
+k = -(HW_MON_CANDY[part] or 0) * 1e6 + d
+end
+if k < bestD then best, bestD = pos, k end
+end
 end
 end
 end
@@ -3682,11 +3906,7 @@ root.CFrame = CFrame.new(root.Position + delta.Unit
 * math.min(delta.Magnitude, HwMon.speed * 0.6))
 end)
 end
-local tool = P(function()
-local ch = LocalPlayer.Character
-return ch and ch:FindFirstChildOfClass("Tool")
-end)
-if tool then P(function() tool:Activate() end) end
+hwMonSwing()
 end)
 local HwPump = { on = true, tp = true, speed = 300 }
 local PBoss = { on = false, dodge = true }
@@ -3718,11 +3938,7 @@ P(function()
 root.CFrame = CFrame.new(root.Position + dir.Unit * 24 + Vector3.new(0, 6, 0))
 end)
 end
-local tool = P(function()
-local ch = LocalPlayer.Character
-return ch and ch:FindFirstChildOfClass("Tool")
-end)
-if tool then P(function() tool:Activate() end) end
+hwMonSwing()
 return
 end
 end
@@ -3745,6 +3961,8 @@ root.CFrame = CFrame.new(root.Position + delta.Unit
 end)
 end
 P(function() Repo.Fire("RE/PumpkinBoss/Collect") end)
+local pp = P(function() return inst:FindFirstChildOfClass("ProximityPrompt") end)
+if pp then P(function() firePromptInstance(pp) end) end
 Tasks.Status("hwpump", "Collecting pumpkins")
 return
 end
@@ -3756,19 +3974,23 @@ end)
 local HwDog = { on = false }
 local HwFish = { on = false, luck = "x1.5 Perfect", spot = "Default",
 spots = {}, speed = 300, lastCast = 0 }
-Tasks.Add("hwdog", 3.0, function()
+Tasks.Add("hwdog", 4.0, function()
 if not HwDog.on then return end
-local done = 0
-for _, path in ipairs({ "RF/GhostDogQuest/AskAcceptQuest",
-"RF/GhostDogQuest/AskStartQuest",
-"RF/GhostDogQuest/AskProgressQuest",
-"RF/GhostDogQuest/AskClaimReward",
-"RF/GhostDogQuest/AskClaimQuestReward" }) do
-local r = P(function() return Repo.Invoke(path) end)
-if r ~= nil then done = done + 1 end
+local quest = P(function() return Repo.Invoke("RF/GhostDogQuest/Talk") end)
+if type(quest) == "table" then
+P(function() Repo.Invoke("RF/GhostDogQuest/Dive") end)
+task.wait(0.3)
+P(function() Repo.Invoke("RF/GhostDogQuest/Cast") end)
+task.wait(0.5)
+P(function() Repo.Invoke("RF/GhostDogQuest/Collect") end)
+task.wait(0.3)
+P(function() Repo.Invoke("RF/GhostDogQuest/Claim") end)
+task.wait(0.2)
+P(function() Repo.Invoke("RF/GhostDogQuest/Surface") end)
+Tasks.Status("hwdog", "Ghost Dog quest progressing")
+else
+Tasks.Status("hwdog", "Ghost Dog quest: waiting/none available")
 end
-Tasks.Status("hwdog", done > 0 and "Ghost Dog quest progressing"
-or "Ghost Dog quest: waiting/none available")
 end)
 local FISH_LUCK_DELAY = {
 ["x1.5 Perfect"] = 7, ["x1.2"] = 6, ["x1.1"] = 5, ["x1.0 Fastest"] = 3,
@@ -3778,23 +4000,28 @@ if not HwFish.on then return end
 local waitS = FISH_LUCK_DELAY[HwFish.luck] or 7
 if os.clock() - HwFish.lastCast < waitS then return end
 HwFish.lastCast = os.clock()
-local root = Movement.Root()
-if not root then return end
-local pos = root.Position
 if HwFish.spot ~= "Default" then
 local n = tonumber(string.match(HwFish.spot, "%d")) or 1
 local saved = HwFish.spots[n]
 if saved then
-P(function() root.CFrame = CFrame.new(saved) end)
-pos = saved
+local root = Movement.Root()
+if root then P(function() root.CFrame = CFrame.new(saved) end) end
 end
 end
-P(function() Repo.Invoke("RF/Fishing/Cast", pos) end)
-task.delay(waitS - 1.5, function()
-P(function() Repo.Invoke("RF/Fishing/Reel") end)
-P(function() Repo.Invoke("RF/Fishing/Reel", true) end)
-end)
+task.spawn(function()
+if Movement.Claim("fish") then
 Tasks.Status("hwfish", "Casting (" .. HwFish.luck .. ")")
+local ok = Repo.Invoke("RF/Fishing/Cast", HwFish.luck)
+if ok == nil then ok = Repo.Invoke("RF/Fishing/Cast") end
+if ok ~= nil then
+task.wait(math.max(waitS - 1.5, 2))
+Repo.Invoke("RF/Fishing/Reel")
+else
+Tasks.Status("hwfish", "Tidak bisa memancing di sini")
+end
+Movement.Release("fish")
+end
+end)
 end)
 local Rotation = { on = false, mode = "Timer", fishMin = 5, treadMin = 5,
 phase = "fishing", swapAt = 0 }
@@ -3840,25 +4067,43 @@ minValue = 0,
 }
 Steal.hwFilterHook = function(egg)
 if not HWX.on then return false end
+if HWX.index and not Repo.IndexMissing(egg.Category or egg.Name or "") then return false end
 local name = tostring(egg.Category or egg.Name or "")
 if next(HWX.eggs) ~= nil and not HWX.eggs[name] then return false end
 if next(HWX.rarities) ~= nil and not HWX.rarities[tostring(egg.RarityLabel or "")] then return false end
 if HWX.minValue > 0 and (egg.Value or 0) < HWX.minValue then return false end
 return true
 end
-Tasks.Add("hwbuy", 6.0, function()
+Tasks.Add("hwbuy", 8.0, function()
 if not HWX.buy then return end
-local r = P(function() return Repo.Invoke("RF/HalloweenDimension/AskBuyEgg") end)
-if r ~= nil then
+if os.clock() < (HWX.buyCooldown or 0) then return end
+local ok = Repo.Invoke("RF/HalloweenDimension/AskBuyEgg")
+if ok then
+HWX.buyCooldown = os.clock() + 5
 Tasks.Status("hwbuy", "Halloween Dimension egg bought")
+else
+HWX.buyCooldown = os.clock() + 30
+Tasks.Status("hwbuy", "Halloween egg buy: menunggu (cooldown)")
 end
 end)
 Tasks.Add("hwplace", 8.0, function()
 if not HWX.placeHatch then return end
-local own = EggState.InBagOwn()
-for uid in pairs(own) do
-local r = P(function() return Repo.Invoke("RF/EggWorld/AskHatch", uid) end)
-if r ~= nil then break end
+local home = Repo.PenAnchor()
+if not home then return end
+for uid, e in pairs(EggState.InBagOwn()) do
+local cat = e.AssetCategory or ""
+if Repo.IndexMissing(cat) then
+local placed = Repo.Invoke("RF/EggWorld/AskPlaceEgg", uid)
+if placed then
+task.wait(0.4)
+local ok = Repo.Invoke("RF/EggWorld/AskHatch", uid)
+if ok ~= nil and ok ~= false then
+Repo.Invoke("RF/EggWorld/AskFinishHatch", uid)
+Tasks.Status("hwplace", "Missing index egg placed & hatched: " .. cat)
+return
+end
+end
+end
 end
 end)
 local FarmHud = {
@@ -4059,7 +4304,32 @@ end
 end)
 end
 end)
-local Predictor = { sort = "Value", spotlight = true }
+local Predictor = { sort = "Value", spotlight = true, list = {}, lastFetch = 0 }
+function Predictor.Fetch()
+local now = os.clock()
+if now - Predictor.lastFetch < 2 then return end
+Predictor.lastFetch = now
+local res = Repo.Invoke("RF/LiveEvents/FetchRunning")
+if type(res) == "table" then
+Predictor.list = res
+end
+end
+Repo.Connect("RE/LiveEvents/Began", function(ev)
+if type(ev) == "table" then
+local name = tostring(ev.AssetCategory or ev.Name or ev.Type or "?")
+local label, num = Repo.RarityOf(name)
+Notify("🔮 Event mulai", name, 4)
+if Predictor.spotlight then
+local value = tonumber(ev.Value) or Repo.EggValue(name, 1) or 0
+Notify("🔮 Preview Card", name .. "  [" .. tostring(label) .. "]  $"
+.. fmtNum(value) .. "/s" .. (ev.TimeLeft and ("  |  " .. tostring(math.floor(ev.TimeLeft)) .. "s") or ""), 6)
+end
+Webhook.Post("Rare Spawn", "Event baru: **" .. name .. "**", num, name)
+end
+end)
+Repo.Connect("RE/LiveEvents/Ended", function(ev)
+Tasks.Wake("predictor")
+end)
 local function predictorSorted()
 local list = {}
 for _, egg in ipairs(EggState.FieldEggs()) do
@@ -4080,6 +4350,43 @@ end)
 return list
 end
 Tasks.Add("predictor", 2.0, function()
+Predictor.Fetch()
+local rows = {}
+if type(Predictor.list) == "table" then
+for _, ev in pairs(Predictor.list) do
+if type(ev) == "table" then
+local name = tostring(ev.AssetCategory or ev.Name or ev.Type or "?")
+local label, num = Repo.RarityOf(name)
+local timeLeft = tonumber(ev.TimeLeft or ev.SecondsLeft or ev.timeLeft)
+local value = tonumber(ev.Value) or Repo.EggValue(name, 1) or 0
+rows[#rows + 1] = { Name = name, RarityLabel = label, RarityNum = num,
+Value = value, TimeLeft = timeLeft }
+end
+end
+end
+table.sort(rows, function(a, b)
+if Predictor.sort == "Rarity" then
+if (a.RarityNum or 0) ~= (b.RarityNum or 0) then
+return (a.RarityNum or 0) > (b.RarityNum or 0)
+end
+return (a.Value or 0) > (b.Value or 0)
+elseif Predictor.sort == "Time Left" then
+return (a.TimeLeft or math.huge) < (b.TimeLeft or math.huge)
+end
+return (a.Value or 0) > (b.Value or 0)
+end)
+if #rows > 0 then
+local lines = {}
+for i = 1, math.min(#rows, 15) do
+local e = rows[i]
+local extra = e.TimeLeft and ("  |  " .. tostring(math.floor(e.TimeLeft + 0.5)) .. "s") or ""
+lines[#lines + 1] = tostring(i) .. ". " .. tostring(e.Name)
+.. "  [" .. tostring(e.RarityLabel or "?") .. "]"
+.. "  $" .. fmtNum(e.Value or 0) .. "/s" .. extra
+end
+Tasks.Status("predictor", table.concat(lines, "\n"))
+return
+end
 local list = predictorSorted()
 local lines = {}
 for i = 1, math.min(#list, 15) do
@@ -4827,6 +5134,7 @@ StealPanel.rowHw = topBtn(3, 48, "HW", function()
 local el = Config.Elements["admin/hwsteal"]
 local newVal = not HWX.on
 HWX.on = newVal
+Steal.hwAuto = newVal
 if el and el.Set then P(function() el:Set(newVal, true) end) end
 StealPanel.Refresh()
 end)
@@ -10547,7 +10855,7 @@ local targets = P(function() return EggState.StealTargets() end)
 local matched, freshRare = 0, false
 for _, egg in ipairs(targets or {}) do
 if egg.Kind ~= "Base" and (egg.RarityNum or 0) >= rareNum then
-matched += 1
+matched = matched + 1
 local key = tostring(egg.Uid or egg.Key or egg.Name or "")
 if AutoHop.seen[key] == nil then freshRare = true end
 AutoHop.seen[key] = now
@@ -10602,9 +10910,15 @@ local ok = Repo.Fire("RE/Homestead/AskBaseTierRaise")
 Tasks.Status("progress", ok and "Base tier raise dikirim" or "Base: maksimal / gagal")
 end
 if Progress.claimCash and progGate("cash", 45) then
-P(function() Repo.Invoke("RF/AwayEarnings/FetchSummary") end)
+local pending = Repo.Invoke("RF/AwayEarnings/PendingCheck")
+local has = (type(pending) == "number" and pending > 0)
+or (type(pending) == "table" and pending.amount ~= nil)
+if has then
 local ok = Repo.Invoke("RF/AwayEarnings/AskCollect")
 Tasks.Status("progress", ok and "Uang offline diklaim" or "Tidak ada uang offline")
+else
+Tasks.Status("progress", "Tidak ada uang offline menunggu")
+end
 end
 if Progress.claimIndex and progGate("index", 300) then
 local ok = Repo.Invoke("RF/Codex/AskRedeemAll")
@@ -10803,9 +11117,39 @@ return plr.Character and plr.Character
 end)
 if root and tPos then
 P(function() root.CFrame = CFrame.new(tPos + Vector3.new(0, 2, 0)) end)
-local prompt = P(function()
+local holderChar = plr.Character
+local prompt = nil
+for _, m in ipairs(workspace:GetChildren()) do
+local isEggModel = P(function()
+return m:IsA("Model") and #m.Name == 32 end)
+if isEggModel and holderChar then
+local welded = P(function()
+for _, j in ipairs(m:GetDescendants()) do
+if j:IsA("JointInstance") or j:IsA("WeldConstraint") or j:IsA("RigidConstraint") then
+local p0, p1 = j.Part0, j.Part1
+for _, part in ipairs({ p0, p1 }) do
+if typeof(part) == "Instance" and part:IsDescendantOf(holderChar) then
+return true
+end
+end
+end
+end
+return false
+end)
+if welded then
+prompt = P(function()
+return m:FindFirstChild("StealPrompt", true)
+or m:FindFirstChildOfClass("ProximityPrompt", true)
+end)
+break
+end
+end
+end
+if not prompt and tool then
+prompt = P(function()
 return tool:FindFirstChildOfClass("ProximityPrompt", true)
 end)
+end
 if prompt then P(function() firePromptInstance(prompt) end) end
 end
 end
@@ -11044,7 +11388,12 @@ mkToggle(EventTab, "event/pboss", "Auto Pumpkin Boss", false, function(v) PBoss.
 mkToggle(EventTab, "event/pdodge", "Auto Dodge Attacks", true, function(v) PBoss.dodge = v end)
 mkSection(EventTab, "Halloween Dimension")
 mkStatus(EventTab, "hwstatus", "Halloween Status  |  Off")
-mkToggle(EventTab, "admin/hwsteal", "Auto Steal Halloween Eggs", false, function(v) HWX.on = v end)
+mkStatus(EventTab, "hwsteal", "Halloween Steal  |  Idle")
+mkToggle(EventTab, "admin/hwsteal", "Auto Steal Halloween Eggs", false, function(v)
+HWX.on = v
+Steal.hwAuto = v
+Tasks.Wake("hwsteal")
+end)
 mkToggle(EventTab, "event/hwinstant", "Instant Steal Halloween Eggs", true, function(v)
 Steal.hwInstant = v
 HWX.instant = v
@@ -11504,7 +11853,7 @@ Text = "Hop terus selama belum ada egg yang cocok filter (Until An Egg "
 end)
 P(function()
 FarmTab:AddParagraph({
-Title = "ThorHub v3.2 — basis kode baru",
+Title = "ThorHub v3.3 — sync 1:1 kode baru",
 Text = "Struktur menu & metode engine dipetakan 1:1 dari kode baru "
 .. "Chilli Hub (SAE v172610): 8 tab, Delivery 3-mode (Tween / "
 .. "Instant Steps / Fast Tween), Instant Steal V3 via Admin "
@@ -11560,7 +11909,7 @@ if ThorUI then P(function() ThorUI:Destroy() end) end
 end
 Gill.__THORHUB_AF_LOADED = true
 Gill.__THORHUB_AF_DESTROY = DestroyAll
-Notify("⚡ ThorHub", "v3.2 siap! Menu 8 tab persis kode baru + Steal Panel hijack HUD.", 6)
+Notify("⚡ ThorHub", "v3.3 siap! Menu 8 tab + Steal Panel hijack HUD (remote sync 1:1).", 6)
 if not Repo.DirectoryOK then
 task.delay(2, function()
 Notify("ThorHub", "Asset Directory tidak ketemu — beberapa filter memakai fallback", 6)
@@ -11573,7 +11922,7 @@ end)
 end
 end)
 if bootOK then
-print("[ThorHub] v3.2 menu siap. Buka/tutup: tombol petir melayang atau RightControl.")
+print("[ThorHub] v3.3 menu siap. Buka/tutup: tombol petir melayang atau RightControl.")
 else
 warn("[ThorHub] BOOT GAGAL: " .. tostring(bootErr))
 pcall(function()
@@ -11584,4 +11933,4 @@ Duration = 10,
 })
 end)
 end
--- THORHUB-EOF v3.2
+-- THORHUB-EOF v3.3
