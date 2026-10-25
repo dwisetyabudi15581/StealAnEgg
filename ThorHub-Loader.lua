@@ -1,18 +1,20 @@
 --[[════════════════════════════════════════════════════════════════════════════
-  ⚡ THORHUB LOADER — AUTO FARM | STEAL AN EGG
+  ⚡ THORHUB LOADER — AUTO FARM | STEAL AN EGG (v2 — diagnostik jelas)
   ──────────────────────────────────────────────────────────────────────────
   Cara pakai (executor Roblox):
     loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/ThorHub-Loader.lua"))()
 
   Apa yang dimuat:
-    ThorHub-AutoFarm.lua — Auto Steal (V1/V2/V3) · Shooting Star ·
-    Butterfly Bloom · Wisp & Banjo · Auto Mutation · Auto Place Egg ·
-    Auto Treadmill · Auto Hatch & Equip · Auto Sell · Auto Fuse ·
-    Auto Favorite. UI: ThorUi (floating ⚡ + keybind RightControl).
+    ThorHub-AutoFarm.lua v3.1 — rewrite persis kode baru StealAnEggg:
+    menu 8 tab (Farm/Event/Admin Abuse/Player/Predictor/Server/Misc/Auto Hop),
+    Steal Panel (hijack HUD game: tombol Pets + frame ActivePets), Delivery
+    3-mode, Instant Steal V3, ESP/Combat/Performance/Server, Auto Hop.
 
-  Loader ini tahan gangguan jaringan: 3x percobaan + mirror CDN jsDelivr
-  + validasi isi sebelum eksekusi (cegah "attempt to call a nil value"
-  saat raw.githubusercontent sesaat balas 404/rate-limit).
+  Loader tahan gangguan jaringan: 3x percobaan + mirror CDN jsDelivr
+  + validasi isi SEBELUM eksekusi. Jika gagal, pesan error yang muncul
+  adalah diagnosis sesungguhnya:
+    - "download tidak lengkap (N bytes)" = file terpotong batas executor
+    - "parse gagal (N bytes): <error Lua>" = error compile file (baris ke-N)
 ════════════════════════════════════════════════════════════════════════════]]
 
 local URLS = {
@@ -30,12 +32,17 @@ for attempt = 1, 3 do
         local ok, body = pcall(function() return game:HttpGet(u) end)
         if ok and type(body) == "string" and #body > 5000
             and not string.match(body, "^%s*[45]%d%d") then
-            local chunk = loadstring(body)
-            if chunk then
-                chunk()
-                return
+            if not string.find(body, "THORHUB-EOF", -60, true) then
+                last = "download tidak lengkap — file terpotong (diterima "
+                    .. #body .. " bytes, file utuh sekitar 337 ribu bytes)"
+            else
+                local chunk, err = loadstring(body)
+                if chunk then
+                    chunk()
+                    return
+                end
+                last = "parse gagal (" .. #body .. " bytes): " .. tostring(err)
             end
-            last = "parse gagal: " .. string.sub(body, 1, 80)
         elseif ok and type(body) == "string" and #body > 0 then
             last = string.sub(body, 1, 120)
         else
