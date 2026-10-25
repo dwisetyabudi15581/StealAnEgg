@@ -54,6 +54,7 @@ local PLACE_ID  = game.PlaceId
 local JOB_ID    = game.JobId
 local SOURCE_URL = "https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/ThorHub-StealAnEgg.lua"
 local THORUI_URL = "https://raw.githubusercontent.com/dwisetyabudi15581/ThorUi/main/ThorUi.lua"
+-- (loader tangguh fetchLua/queueReload didefinisikan setelah helper P)
 
 -- pcall wrapper yang selalu aman
 local function P(fn, ...)
@@ -79,6 +80,58 @@ local function fmtNum(n)
 end
 
 local function lower(s) return type(s) == "string" and string.lower(s) or "" end
+
+-- ==== loader tangguh (anti "attempt to call a nil value") ====
+-- Loader satu-baris `loadstring(game:HttpGet(url))()` bisa error "attempt
+-- to call a nil value" di Line 1 kalau HttpGet balas 404/rate-limit/halaman
+-- error (proxy executor sering kena) — loadstring lalu return nil.
+-- fetchLua: retry + mirror CDN jsDelivr + validasi isi sebelum dipakai.
+
+local function mirrorUrl(url)
+    -- raw.githubusercontent.com/user/repo/branch/x -> cdn.jsdelivr.net/gh/user/repo@branch/x
+    return (string.gsub(url, "^https://raw%.githubusercontent%.com/([^/]+)/([^/]+)/([^/]+)",
+        "https://cdn.jsdelivr.net/gh/%1/%2@%3"))
+end
+
+local function fetchLua(name, urls, minLen)
+    minLen = minLen or 1000
+    local last = "no body"
+    for attempt = 1, 3 do
+        for _, u in ipairs(urls) do
+            local body = P(function() return game:HttpGet(u) end)
+            if type(body) == "string" and #body > minLen
+                and not string.match(body, "^%s*[45]%d%d") then
+                return body
+            end
+            if type(body) == "string" and #body > 0 then
+                last = string.sub(body, 1, 120)
+            end
+        end
+        task.wait(0.6 * attempt)
+    end
+    error(string.format("[ThorHub] Gagal mengambil %s (cek koneksi/URL): %s",
+        tostring(name), tostring(last)), 0)
+end
+
+-- versi robust untuk queue_on_teleport: kode multi-baris yang retry sendiri
+-- + fallback mirror, jadi re-execute setelah hop tidak mati oleh 404 sesaat.
+local function queueReload()
+    if type(queue_on_teleport) ~= "function" then return end
+    queue_on_teleport(string.format([[local U={"%s","%s"}
+local B=nil
+for _=1,3 do
+for _,u in ipairs(U) do
+local ok,r=pcall(function()return game:HttpGet(u)end)
+if ok and type(r)=="string" and #r>1000 and not r:match("^%%s*[45]%%d%%d") then B=r break end
+end
+if B then break end
+task.wait(0.5)
+end
+if B then
+local f=loadstring(B)
+if f then f() end
+end]], SOURCE_URL, mirrorUrl(SOURCE_URL)))
+end
 
 --────────────────────────────[ REPO LAYER ]────────────────────────────
 -- Lapisan akses data game. Semua akses dibungkus pcall: kalau struktur
@@ -677,11 +730,15 @@ function Repo.EggStateModule()
     return nil
 end
 
--- fallback curi via modul game (pola C[13] asli); return true bila terpakai
+-- fallback curi via modul game (pola C[13] asli); return true bila terpakai.
+-- Pola asli "Taking the starter egg": uid egg starter (FirstAreaEgg_..)
+-- membawa akhiran _<NamaArea>:Slot_N — modul game butuh nama slotnya
+-- sebagai argumen kedua; egg biasa cukup uid saja (slot = nil).
 function Repo.CarryFieldEgg(uid)
     local m = Repo.EggStateModule()
     if m and type(m.CarryFieldEgg) == "function" and type(uid) == "string" and uid ~= "" then
-        P(m.CarryFieldEgg, uid)
+        local slot = string.match(uid, "_([%w ]+:Slot_%d+)$")
+        P(m.CarryFieldEgg, uid, slot)
         return true
     end
     return false
@@ -815,26 +872,33 @@ function Movement.CarryTo(pos, done, timeout, speedMult, speedAbs)
         if not root then break end
         if done and done() then break end
         if heldY == nil then heldY = root.Position.Y end
-        -- matikan collision karakter selama membawa (seperti asli)
-        local char = LocalPlayer.Character
-        if char then
-            for _, p in ipairs(char:GetDescendants()) do
-                if p:IsA("BasePart") and p.CanCollide and not collided[p] then
-                    collided[p] = true
-                    pcall(function() p.CanCollide = false end)
+        -- pola asli: saat kena ragdoll (guard/tembakan pemain lain), berhenti
+        -- melawan fisika — pulihkan dulu, baru lanjut antar egg.
+        if Movement.IsRagged() then
+            Character.AntiRagdollOnce()
+            task.wait(0.15)
+        else
+            -- matikan collision karakter selama membawa (seperti asli)
+            local char = LocalPlayer.Character
+            if char then
+                for _, p in ipairs(char:GetDescendants()) do
+                    if p:IsA("BasePart") and p.CanCollide and not collided[p] then
+                        collided[p] = true
+                        pcall(function() p.CanCollide = false end)
+                    end
                 end
             end
+            local delta = pos - root.Position
+            delta = Vector3.new(delta.X, 0, delta.Z)
+            local base = speedAbs or (Movement.WalkSpeed() * 1.5 * (speedMult or 1))
+            local spd = math.min(base, delta.Magnitude / 0.05)
+            local vel = Vector3.new(0, 0, 0)
+            if delta.Magnitude > 3 then
+                vel = delta.Unit * spd
+            end
+            vel = vel + Vector3.new(0, (heldY - root.Position.Y) * 8, 0)
+            pcall(function() root.AssemblyLinearVelocity = vel end)
         end
-        local delta = pos - root.Position
-        delta = Vector3.new(delta.X, 0, delta.Z)
-        local base = speedAbs or (Movement.WalkSpeed() * 1.5 * (speedMult or 1))
-        local spd = math.min(base, delta.Magnitude / 0.05)
-        local vel = Vector3.new(0, 0, 0)
-        if delta.Magnitude > 3 then
-            vel = delta.Unit * spd
-        end
-        vel = vel + Vector3.new(0, (heldY - root.Position.Y) * 8, 0)
-        pcall(function() root.AssemblyLinearVelocity = vel end)
         task.wait()
     end
     root = Movement.Root()
@@ -952,14 +1016,18 @@ end
 function Character.AntiRagdollOnce()
     local char = LocalPlayer.Character
     if not char then return end
-    local endT = tonumber(char:GetAttribute("RagdollEndTime"))
-    if endT and endT > workspace:GetServerTimeNow() then
+    local endT = tonumber(P(function() return char:GetAttribute("RagdollEndTime") end))
+    local now = P(function() return workspace:GetServerTimeNow() end) or 0
+    if endT and endT > now then
         pcall(function() char:SetAttribute("RagdollEndTime", 0) end)
     end
     local hum = char:FindFirstChildOfClass("Humanoid")
     if hum then
-        if hum.PlatformStand then hum.PlatformStand = false end
-        if hum:GetState() == Enum.HumanoidStateType.Physics or hum:GetState() == Enum.HumanoidStateType.Ragdoll then
+        if P(function() return hum.PlatformStand end) then
+            pcall(function() hum.PlatformStand = false end)
+        end
+        local st = P(function() return hum:GetState() end)
+        if st == Enum.HumanoidStateType.Physics or st == Enum.HumanoidStateType.Ragdoll then
             pcall(function() hum:ChangeState(Enum.HumanoidStateType.GettingUp) end)
         end
     end
@@ -969,6 +1037,41 @@ function Character.AntiRagdollOnce()
             pcall(function() t:Destroy() end)
         end
     end
+end
+
+-- ==== deteksi ragdoll (pola C[14] asli) ====
+-- Script asli mengecek atribut RagdollEndTime + state Humanoid sebelum
+-- bergerak: melawan fisika saat ragdoll hanya bikin server rubber-band
+-- (dan curi selalu gagal). Dipakai di seluruh jalur curi/antar egg.
+function Movement.IsRagged()
+    local char = LocalPlayer.Character
+    if not char then return false end
+    local endT = tonumber(P(function() return char:GetAttribute("RagdollEndTime") end))
+    if endT then
+        local now = P(function() return workspace:GetServerTimeNow() end) or 0
+        if endT > now then return true end
+    end
+    local hum = char:FindFirstChildOfClass("Humanoid")
+    if hum then
+        local st = P(function() return hum:GetState() end)
+        if st == Enum.HumanoidStateType.Physics or st == Enum.HumanoidStateType.Ragdoll then
+            return true
+        end
+    end
+    return false
+end
+
+-- pulihkan dari ragdoll lalu tunggu sampai benar-benar berdiri (max maxT).
+-- Return true bila sudah bisa bergerak lagi.
+function Movement.WaitUnragdoll(maxT)
+    maxT = maxT or 2
+    local t0 = os.clock()
+    while os.clock() - t0 < maxT do
+        if not Movement.IsRagged() then return true end
+        Character.AntiRagdollOnce()
+        task.wait(0.15)
+    end
+    return not Movement.IsRagged()
 end
 
 --────────────────────────────[ SCAN CACHE (anti-lag) ]────────────────────────────
@@ -1653,7 +1756,17 @@ local Steal = {
     v2Zones = { ["Titan Temple"] = true, ["Light Dark"] = true, ["Enchanted Forest"] = true },
     busy = false, bad = {}, stolen = 0, best = nil, bestRank = -1,
     history = {}, lastDeliver = 0, hwDelivered = 0,
+    -- pola SafeCarry.Blocked asli: uid egg yang pernah direbut guard saat
+    -- diantar — di-skip 60 dtk ("the guard caught you with this egg before")
+    blocked = {},
 }
+
+-- jarak horizontal (pola g() asli): hanya sumbu X-Z, tinggi diabaikan —
+-- dipakai pencarian SmartPromptPart supaya tidak salah pilih antar lantai.
+local function horizDist(a, b)
+    local dx, dz = (a.X or 0) - (b.X or 0), (a.Z or 0) - (b.Z or 0)
+    return math.sqrt(dx * dx + dz * dz)
+end
 
 -- ==== zona metode instant (peta zona asli) ====
 local V3_ZONES = {
@@ -1774,7 +1887,8 @@ local function pickStealTarget()
         -- AUTO hanya egg lapangan + Halloween (pola asli); egg base pemain
         -- lain hanya bisa dicuri manual lewat tombol Steal di panel.
         if egg.Kind ~= "Base"
-            and not (Steal.bad[egg.Key] and Steal.bad[egg.Key] > now) then
+            and not (Steal.bad[egg.Key] and Steal.bad[egg.Key] > now)
+            and not (Steal.blocked[egg.Uid] and Steal.blocked[egg.Uid] > now) then
             if stealFilterOk(egg) then
                 local sc = stealScore(egg)
                 if sc > bestScore then
@@ -1956,22 +2070,47 @@ local function deliverEgg(egg)
         end, 45, Steal.carrySpeed / 100)
     end
 
-    -- beri kesempatan server redeem (record berubah dari Carried)
+    -- beri kesempatan server redeem. Konfirmasi utama: RE verdict
+    -- (RF FieldEggRedeemVerdict menaikkan Steal.lastDeliver) — bukan
+    -- sekadar "tidak lagi membawa", karena egg bisa Direbut guard
+    -- di tengah jalan (pola SafeCarry asli: Blocked list).
+    local verdictMark = Steal.lastDeliver or 0
     local t = os.clock() + 8
-    while isCarrying() and os.clock() < t do
+    while isCarrying() and os.clock() < t and Steal.lastDeliver <= verdictMark do
         task.wait(0.1)
     end
-    if isCarrying() then
+    if isCarrying() and Steal.lastDeliver <= verdictMark then
         -- mungkin belum sampai zona redeem: lepas tool di dekat target
         local hum = Movement.Humanoid()
         if hum then pcall(function() hum:UnequipTools() end) end
-        task.wait(1)
+        local t2 = os.clock() + 1.5
+        while isCarrying() and os.clock() < t2 do task.wait(0.1) end
     end
-    if isCarrying() then
-        Tasks.Status("steal", "Delivery stuck — egg belum masuk zona redeem, mencoba lagi")
-    else
+    if Steal.lastDeliver > verdictMark then
         Tasks.Status("steal", "Delivered")
-        Steal.lastDeliver = os.clock()
+    elseif not isCarrying() then
+        -- egg lepas tanpa verdict: dekat rumah = sukses redeem diam-diam,
+        -- jauh dari rumah = Direbut/tercecer di jalan (guard)
+        local root = Movement.Root()
+        local targetPos = target
+        if typeof(target) == "Instance" then
+            targetPos = P(function()
+                if target:IsA("BasePart") then return target.Position end
+                if target:IsA("Model") then return target:GetPivot().Position end
+            end)
+        end
+        local nearHome = root and targetPos
+            and (root.Position - targetPos).Magnitude < 40
+        if nearHome or targetPos == nil then
+            Tasks.Status("steal", "Delivered")
+            Steal.lastDeliver = os.clock()
+        else
+            Tasks.Status("steal", "Egg Direbut di jalan — the guard caught you with this "
+                .. tostring(egg.Name) .. " before, skipping it")
+            Steal.blocked[tostring(egg.Uid or egg.Key)] = os.clock() + 60
+        end
+    else
+        Tasks.Status("steal", "Delivery stuck — egg belum masuk zona redeem, mencoba lagi")
     end
     Movement.Release("steal")
     Steal.busy = false
@@ -1989,25 +2128,31 @@ local function fieldRecord(uid)
     return nil
 end
 
--- ==== prompt curi egg area (pola asli) ====
+-- ==== prompt curi egg area (pola C[9] asli, presisi 1:1) ====
 -- Prompt curi egg area TIDAK menempel di egg: game memasang part global
 -- "SmartPromptPart" (anak workspace) berisi ProximityPrompt
--- "CarryAreaEgg". Pilih part terdekat ke EGG, lalu pastikan tidak ada
--- egg lain yang lebih dekat ke part itu (anti salah-ambil).
+-- "CarryAreaEgg". Asli memilih part terdekat ke EGG dengan batas 14 STUD
+-- dan jarak HORIZONTAL (X-Z saja) — bukan 3D — lalu memverifikasi part itu
+-- bukan milik slot egg lain (AreaEggSlotsClient) atau egg yang sedang
+-- dibawa pemain lain (model 32-char ber-Hitbox). Ambil 3D-40-stud =
+-- sering nembak prompt egg sebelah → curi selalu gagal.
 local function nearestCarryPrompt(egg, maxDist)
     local pos = egg.Pos
     if not pos then return nil end
-    -- batas jarak (pola asli): prompt terlalu jauh = melayani egg lain
-    local bestPrompt, bestPart, bestD = nil, nil, maxDist or 40
+    -- batas jarak (pola asli): 14 stud horizontal, prompt lebih jauh
+    -- dianggap melayani egg lain
+    local bestPrompt, bestPart, bestD = nil, nil, maxDist or 14
     for _, m in ipairs(workspace:GetChildren()) do
         if m.Name == "SmartPromptPart" then
-            local pr = P(function() return m:FindFirstChild("CarryAreaEgg") end)
             local isPart = P(function() return m:IsA("BasePart") end)
-            if pr and isPart and P(function() return pr:IsA("ProximityPrompt") end) then
-                local mp = P(function() return m.Position end)
-                if mp then
-                    local d = (mp - pos).Magnitude
-                    if d < bestD then bestPrompt, bestPart, bestD = pr, m, d end
+            if isPart then
+                local pr = P(function() return m:FindFirstChild("CarryAreaEgg") end)
+                if pr and P(function() return pr:IsA("ProximityPrompt") end) then
+                    local mp = P(function() return m.Position end)
+                    if mp then
+                        local d = horizDist(mp, pos)
+                        if d < bestD then bestPrompt, bestPart, bestD = pr, m, d end
+                    end
                 end
             end
         end
@@ -2015,10 +2160,29 @@ local function nearestCarryPrompt(egg, maxDist)
     if not bestPrompt or not bestPart then return nil end
     local pp = P(function() return bestPart.Position end)
     if not pp then return nil end
-    for _, other in ipairs(EggState.FieldEggs()) do
-        if other.Key ~= egg.Key and other.Pos
-            and (other.Pos - pp).Magnitude + 1.5 < (pos - pp).Magnitude then
-            return nil -- part itu melayani egg lain, jangan ditembak
+    local myD = horizDist(pp, pos)
+    -- pola W asli: prompt TIDAK BOLEH lebih dekat ke slot/egg lain
+    -- (margin 1.5 stud) daripada ke egg kita — kalau iya, part itu
+    -- melayani egg sebelah, jangan ditembak.
+    local slots = P(function() return workspace:FindFirstChild("AreaEggSlotsClient") end)
+    if slots then
+        for _, t in ipairs(slots:GetChildren()) do
+            local tp = P(function()
+                if t:IsA("Model") then return t:GetPivot().Position end
+            end)
+            if tp and horizDist(tp, pp) + 1.5 < myD then
+                return nil
+            end
+        end
+    end
+    for _, m in ipairs(workspace:GetChildren()) do
+        if P(function() return m:IsA("Model") end)
+            and #tostring(m.Name) == 32
+            and P(function() return m:FindFirstChild("Hitbox") end) then
+            local mp = P(function() return m:GetPivot().Position end)
+            if mp and horizDist(mp, pp) + 1.5 < myD then
+                return nil
+            end
         end
     end
     return bestPrompt
@@ -2055,6 +2219,11 @@ local function stealFieldEgg(egg)
     local attempt = 0
     while attempt < 4 and not isCarrying() do
         attempt = attempt + 1
+        -- pola C[14] asli: jangan buang jendela grab saat masih ragdoll
+        -- (kena pukulan guard / pemain lain) — pulihkan dulu.
+        if not Movement.WaitUnragdoll(1.5) then
+            return "fail"
+        end
         local rec = fieldRecord(egg.Uid)
         local m = egg.Model
         local modelAlive = m and P(function() return m.Parent ~= nil end) == true
@@ -2087,6 +2256,7 @@ local function stealFieldEgg(egg)
         while os.clock() < t and not isCarrying() do
             local root = Movement.Root()
             if not root then return "fail" end
+            if Movement.IsRagged() then break end -- ronde berikutnya menunggu
             local live = (m and modelAlive and modelPos(m)) or pos
             local d = (live - root.Position).Magnitude
             if d > 6 then
@@ -2122,6 +2292,10 @@ local function stealPromptEgg(egg)
     local attempt = 0
     while attempt < 3 and not isCarrying() do
         attempt = attempt + 1
+        -- pola C[14] asli: pulihkan ragdoll dulu sebelum mengejar egg
+        if not Movement.WaitUnragdoll(1.5) then
+            return "fail"
+        end
         if not model.Parent or not prompt or not prompt.Parent then
             return (model.Parent and "fail") or "gone"
         end
@@ -2133,6 +2307,7 @@ local function stealPromptEgg(egg)
             local root = Movement.Root()
             if not root then break end
             if not model.Parent then break end
+            if Movement.IsRagged() then break end -- coba lagi ronde berikutnya
             local pos = modelPos(model)
             if not pos then break end
             local d = pos - root.Position
@@ -2242,9 +2417,13 @@ local function stealEggV3(egg)
         if round > 1 then
             Tasks.Status("steal", "Instant Steal V3  |  missed, following the egg (try " .. round .. "/3)")
         end
+        -- pola C[14] asli: tunggu ragdoll selesai (guard bisa memukul
+        -- tepat setelah teleport masuk areanya)
+        Movement.WaitUnragdoll(1.2)
         local deadline = os.clock() + 2.5
         local taken = false
         while os.clock() < deadline and not isCarrying() do
+            if Movement.IsRagged() then break end
             local pos = nil
             local rec = fieldRecord(egg.Uid)
             if rec then
@@ -2270,7 +2449,7 @@ local function stealEggV3(egg)
             -- tembak prompt (pola asli: tiap 0.08 dtk)
             local prompt = egg.Prompt
             if not prompt or not prompt.Parent then
-                if egg.Kind == "Field" then prompt = nearestCarryPrompt(egg, 40) end
+                if egg.Kind == "Field" then prompt = nearestCarryPrompt(egg) end
             end
             if prompt then
                 firePromptInstance(prompt)
@@ -2353,6 +2532,35 @@ local function dropCarriedEgg()
     carryState.uid = nil
 end
 
+-- ==== tunggu guard area tidur (pola SafeCarry.Settle asli) ====
+-- Guard membawa atribut GuardState ("Sleeping"/aktif). Kalau guard yang
+-- berjaga dekat egg sedang aktif, menyerobot hanya bikin kena ragdoll dan
+-- egg gagal dibawa — asli menunggu ("Waiting for the guard to sleep").
+local function waitGuardSleep(egg)
+    local pos = egg and egg.Pos
+    if not pos then return end
+    local t0 = os.clock()
+    while os.clock() - t0 < 3 do
+        local awake = nil
+        for _, inst in ipairs(Scan.Workspace()) do
+            local gs = P(function() return inst:GetAttribute("GuardState") end)
+            if type(gs) == "string" and gs ~= "Sleeping" then
+                local gp = P(function()
+                    if inst:IsA("BasePart") then return inst.Position end
+                    if inst:IsA("Model") then return inst:GetPivot().Position end
+                end)
+                if gp and (gp - pos).Magnitude < 35 then
+                    awake = gs
+                    break
+                end
+            end
+        end
+        if not awake then return end
+        Tasks.Status("steal", "Waiting for the guard to sleep")
+        task.wait(0.25)
+    end
+end
+
 local function stealEgg(egg)
     local claimed = Movement.Claim("steal")
     if not claimed then
@@ -2365,6 +2573,9 @@ local function stealEgg(egg)
         Tasks.Status("steal", "Getting off the treadmill first")
         task.wait(0.2)
     end
+    -- pola SafeCarry.Settle asli: kalau guard area sedang aktif dekat egg,
+    -- tunggu sampai dia tidur (max 3 dtk) supaya tidak tertangkap basah.
+    waitGuardSleep(egg)
     local res
     if Steal.v3 and v3ZoneOk(egg) then
         -- Instant Steal V3: rantai teleport + belt/Star Handler (pola asli)
@@ -4431,7 +4642,7 @@ function Server.Hop(manualMode)
             Server.SaveHopState()
             Notify("Server", "Pindah ke server baru (" .. tostring(best.playing) .. " pemain)", 4)
             if queue_on_teleport and Server.autoLoad then
-                queue_on_teleport([[loadstring(game:HttpGet("]] .. SOURCE_URL .. [["))()]])
+                queueReload()
             end
             pcall(function()
                 TeleportService:TeleportToPlaceInstance(PLACE_ID, best.id, LocalPlayer)
@@ -4446,7 +4657,7 @@ end
 
 function Server.Rejoin()
     if queue_on_teleport and Server.autoLoad then
-        queue_on_teleport([[loadstring(game:HttpGet("]] .. SOURCE_URL .. [["))()]])
+        queueReload()
     end
     pcall(function()
         if JOB_ID ~= "" then
@@ -4460,7 +4671,7 @@ end
 function Server.JoinJobId(jobId)
     if jobId == "" then return end
     if queue_on_teleport and Server.autoLoad then
-        queue_on_teleport([[loadstring(game:HttpGet("]] .. SOURCE_URL .. [["))()]])
+        queueReload()
     end
     pcall(function()
         TeleportService:TeleportToPlaceInstance(PLACE_ID, jobId, LocalPlayer)
@@ -5211,32 +5422,31 @@ end)
 
 ThorUI = nil
 do
-    local lastErr = nil
-    for attempt = 1, 3 do
-        local ok, result = pcall(function()
-            return loadstring(game:HttpGet(THORUI_URL))
-        end)
-        if ok then
-            local okRun, lib = pcall(result)
-            if okRun and type(lib) == "table" then
-                ThorUI = lib
-                break
-            end
-            lastErr = tostring(lib)
-        else
-            lastErr = tostring(result)
+    -- loader tangguh (fetchLua): retry + mirror CDN jsDelivr + validasi
+    -- isi — cegah "attempt to call a nil value" saat raw.githubusercontent
+    -- balas 404/rate-limit sesaat lewat proxy executor.
+    -- minLen cukup kecil (300): cukup menyaring halaman 404/429 tanpa
+    -- menolak library kecil.
+    local ok, lib = pcall(function()
+        local src = fetchLua("ThorUi", { THORUI_URL, mirrorUrl(THORUI_URL) }, 300)
+        local chunk = assert(loadstring(src), "ThorUi parse gagal")
+        return chunk()
+    end)
+    if ok and type(lib) == "table" then
+        ThorUI = lib
+    else
+        if type(warn) == "function" then
+            warn("[ThorHub] Gagal memuat ThorUi: " .. tostring(lib))
         end
-        task.wait(1)
-    end
-    if not ThorUI then
-        warn("[ThorHub] Gagal memuat ThorUi: " .. tostring(lastErr))
         return
     end
 end
 
 if not ThorUI.Version or ThorUI.Version < "2.0" then
     -- tetap lanjut, hanya catat
-    warn("[ThorHub] ThorUi versi lama terdeteksi: " .. tostring(ThorUI.Version))
+    if type(warn) == "function" then
+        warn("[ThorHub] ThorUi versi lama terdeteksi: " .. tostring(ThorUI.Version))
+    end
 end
 
 --────────────────────────────[ MENU HELPERS ]────────────────────────────
@@ -5988,7 +6198,7 @@ end)
 
 -- auto load setelah teleport
 if queue_on_teleport and Server.autoLoad then
-    queue_on_teleport([[loadstring(game:HttpGet("]] .. SOURCE_URL .. [["))()]])
+    queueReload()
 end
 
 -- reset visibility saat respawn
