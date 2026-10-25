@@ -1,7 +1,9 @@
 --[[════════════════════════════════════════════════════════════════════════════
   ⚡ THORHUB — AUTO FARM (Steal an Egg)
   Edisi khusus AUTO FARM: hanya mesin farming + UI floating (ThorUi ⚡).
-  v1.2 — self-contained: ThorUi dibundel (embed), boot shield, log jelas, guard syncGroup.
+  v2.0 — BERBASIS KODE BARU Chilli (SAE v172610): + Auto Hop (Egg Finder),
+  + Auto Progression, + mutasi baru (Scrambled/Bloom/Spirit Bloom/Fractured/
+  Enchanted/Parasite/Nitro/Spectral). ThorUi embedded + boot shield + guard.
   Semua fitur diimplementasi ulang secara native (tanpa kode obfuscate).
   Tanpa promosi apa pun: tidak ada link Discord pihak ketiga, tidak ada
   bootstrap pihak ketiga, tidak ada teks "Chilli/Venyx".
@@ -33,9 +35,9 @@ if Gill.__THORHUB_AF_LOADED then
     if type(old) == "function" then pcall(old) end
 end
 
--- v1.2: log bootstrap — memudahkan verifikasi versi yang berjalan
+-- v2.0: log bootstrap — memudahkan verifikasi versi yang berjalan
 if type(print) == "function" then
-    print("[ThorHub] Auto Farm v1.2 dimuat (self-contained: ThorUi embedded)")
+    print("[ThorHub] Auto Farm v2.0 dimuat (basis kode baru SAE v172610 - self-contained)")
 end
 
 local Services = {}
@@ -11132,9 +11134,177 @@ if not ThorUI.Version or ThorUI.Version < "2.0" then
     end
 end
 
+--────────────────────────────[ AUTO HOP — EGG FINDER ]────────────────────────────
+-- Fitur tab "Auto Hop | Egg Finder" dari kode baru (SAE v172610):
+-- pindah server otomatis sampai egg sesuai filter ditemukan. Tiga mode
+-- ala script baru:
+--   Until An Egg Matches  → hop terus selama belum ada egg yang cocok
+--   Steal Then Hop        → hop setelah berhasil mencuri egg
+--   After A Rare Spawns   → hop begitu egg rarity+ terdeteksi spawn
+
+local HOP_RARITY_NUM = {
+    Common = 1, Uncommon = 2, Rare = 3, Epic = 4, Legendary = 5,
+    Mythic = 6, Cosmic = 7, Secret = 8, Eternal = 9, Divine = 10,
+}
+
+local AutoHop = {
+    on = false,
+    mode = "Until An Egg Matches",
+    waitRarity = "Mythic",
+    firstDelay = 20,
+    tOn = 0,
+    busy = false,
+    lastTry = 0,
+    seen = {},
+    matchCount = -1,
+}
+
+function AutoHop.HopNow(reason)
+    if AutoHop.busy then return end
+    if os.clock() - AutoHop.lastTry < 15 then return end
+    AutoHop.busy = true
+    AutoHop.lastTry = os.clock()
+    Tasks.Status("autohop", "Pindah server: " .. tostring(reason))
+    task.spawn(function()
+        local picked = nil
+        local ok, err = pcall(function()
+            local cursor = ""
+            for page = 1, 3 do
+                local url = ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=100")
+                    :format(game.PlaceId)
+                if page > 1 then url = url .. "&cursor=" .. cursor end
+                local body = game:HttpGet(url)
+                local data = jsonDec(body)
+                if type(data) ~= "table" or type(data.data) ~= "table" then break end
+                for _, sv in ipairs(data.data) do
+                    if type(sv) == "table" and tostring(sv.id) ~= tostring(game.JobId)
+                        and (tonumber(sv.playing) or 0) < (tonumber(sv.maxPlayers) or 100) then
+                        if not picked or (tonumber(sv.playing) or 0) < (tonumber(picked.playing) or 0) then
+                            picked = sv
+                        end
+                    end
+                end
+                cursor = tostring(data.nextPageCursor or "")
+                if cursor == "" or cursor == "nil" then break end
+            end
+            if not picked then error("tidak ada server lain yang tersedia") end
+            if type(Gill) == "table" then Gill.__THORHUB_AUTOHOP = true end
+            Tasks.Status("autohop", "Menuju server " .. tostring(picked.id)
+                .. " (" .. tostring(picked.playing) .. " pemain)")
+            TeleportService:TeleportToPlaceInstance(game.PlaceId, picked.id, LocalPlayer)
+            task.delay(10, function() AutoHop.busy = false end)
+        end)
+        if not ok then
+            AutoHop.busy = false
+            Tasks.Status("autohop", "Hop gagal: " .. tostring(err))
+        end
+    end)
+end
+
+Tasks.Add("autohop", 2.0, function()
+    if not AutoHop.on or AutoHop.busy then return end
+    local now = os.clock()
+    if now - AutoHop.lastTry < 15 then return end
+    local rareNum = HOP_RARITY_NUM[AutoHop.waitRarity] or 6
+    local targets = P(function() return EggState.StealTargets() end)
+    local matched, freshRare = 0, false
+    for _, egg in ipairs(targets or {}) do
+        if egg.Kind ~= "Base" and (egg.RarityNum or 0) >= rareNum then
+            matched += 1
+            local key = tostring(egg.Uid or egg.Key or egg.Name or "")
+            if AutoHop.seen[key] == nil then freshRare = true end
+            AutoHop.seen[key] = now
+        end
+    end
+    AutoHop.matchCount = matched
+    if AutoHop.mode == "Until An Egg Matches" then
+        if matched > 0 then
+            Tasks.Status("autohop", matched .. " egg >= " .. AutoHop.waitRarity .. " ada di sini — tinggal")
+            return
+        end
+        if now - AutoHop.tOn < AutoHop.firstDelay then
+            Tasks.Status("autohop", "Belum ada match — hop dalam "
+                .. math.ceil(AutoHop.firstDelay - (now - AutoHop.tOn)) .. "s")
+            return
+        end
+        AutoHop.HopNow("belum ada egg >= " .. AutoHop.waitRarity)
+    elseif AutoHop.mode == "Steal Then Hop" then
+        if Steal.lastDeliver and Steal.lastDeliver > AutoHop.tOn then
+            AutoHop.HopNow("selesai mencuri egg")
+        else
+            Tasks.Status("autohop", "Menunggu sukses curi sebelum hop")
+        end
+    elseif AutoHop.mode == "After A Rare Spawns" then
+        if freshRare then
+            AutoHop.HopNow("egg " .. AutoHop.waitRarity .. "+ baru spawn")
+        else
+            Tasks.Status("autohop", "Menunggu spawn egg >= " .. AutoHop.waitRarity
+                .. " (match: " .. matched .. ")")
+        end
+    end
+end)
+
+--────────────────────────────[ AUTO PROGRESSION ]────────────────────────────
+-- Fitur tab "Progress | Auto Progression" dari kode baru (SAE v172610).
+local Progress = {
+    upBase = false, claimCash = false, claimIndex = false, buyTrail = false,
+    nextAt = {},
+}
+
+local LIMITED_REDEEMS = {
+    "LimitedEgg", "GravityDisruptor", "MechaReroll", "BrainrotEgg",
+    "BeeLauncher", "MonsterEgg", "Mecha",
+}
+
+local function progGate(k, gap)
+    local now = os.clock()
+    if (Progress.nextAt[k] or 0) > now then return false end
+    Progress.nextAt[k] = now + gap
+    return true
+end
+
+Tasks.Add("progress", 8.0, function()
+    if not (Progress.upBase or Progress.claimCash or Progress.claimIndex or Progress.buyTrail) then return end
+    if not Repo.SaveOK then return end
+    if Progress.upBase and progGate("base", 30) then
+        local ok = Repo.Fire("RE/Homestead/AskBaseTierRaise")
+        Tasks.Status("progress", ok and "Base tier raise dikirim" or "Base: maksimal / gagal")
+    end
+    if Progress.claimCash and progGate("cash", 45) then
+        P(function() Repo.Invoke("RF/AwayEarnings/FetchSummary") end)
+        local ok = Repo.Invoke("RF/AwayEarnings/AskCollect")
+        Tasks.Status("progress", ok and "Uang offline diklaim" or "Tidak ada uang offline")
+    end
+    if Progress.claimIndex and progGate("index", 300) then
+        local ok = Repo.Invoke("RF/Codex/AskRedeemAll")
+        for _, nm in ipairs(LIMITED_REDEEMS) do
+            P(function() Repo.Invoke("RF/Codex/AskRedeemLimitedEgg", nm) end)
+        end
+        Tasks.Status("progress", ok and "Reward index diklaim" or "Index: tidak ada reward")
+    end
+    if Progress.buyTrail and progGate("trail", 60) then
+        local bought, folder = false, nil
+        local dir = Repo.Directory
+        if dir then
+            for _, cand in ipairs({ "Trailwear", "Trails", "TrailWear" }) do
+                folder = P(function() return dir:FindFirstChild(cand) end)
+                if folder then break end
+            end
+        end
+        if folder then
+            for _, tr in ipairs(P(function() return folder:GetChildren() end) or {}) do
+                if P(function() return Repo.Invoke("RF/Trailwear/AskPurchase", tostring(tr.Name)) end) then
+                    bought = true
+                end
+            end
+        end
+        Tasks.Status("progress", bought and "Trail dibeli" or "Trail: tidak ada yang bisa dibeli")
+    end
+end)
+
 --────────────────────────────[ MENU HELPERS ]────────────────────────────
 
--- ==== BOOT SHIELD v1.2 ====--
+-- ==== BOOT SHIELD v2.0 ====--
 -- Pembangunan menu + seluruh boot sequence dibungkus pcall. Kalau game
 -- update / API berubah, error muncul sebagai "warn [ThorHub] BOOT GAGAL:"
 -- yang jelas — bukan stack trace misterius yang menyesatkan.
@@ -11381,7 +11551,9 @@ mkStatus(FarmTab, "wisp", "Wisp: idle")
 mkSection(FarmTab, "Auto Mutation")
 mkToggle(FarmTab, "farm/mutate", "Auto Mutate", false, function(v) Mutate.on = v Tasks.Wake("mutate") end)
 mkMulti(FarmTab, "farm/mutlist", "Mutations To Use",
-    { "Golden", "Silver", "Rainbow", "Boss", "Monstrous", "Sakura", "GreatBloom" },
+    { "Scrambled", "Golden", "Rainbow", "Silver", "Bloom", "Spirit Bloom",
+      "Fractured", "Enchanted", "Parasite", "Nitro", "Spectral",
+      "Boss", "Monstrous", "Sakura", "GreatBloom" },
     function(l) Mutate.use = listToSet(l) end)
 mkDropdown(FarmTab, "farm/mutrarity", "Mutate Min Rarity", rarityChoices, "Off",
     function(v) Mutate.minRarity = rarityNumFromLabel(v) end)
@@ -11474,6 +11646,62 @@ mkToggle(FarmTab, "farm/favunequip", "Auto Unfavorite Equipped", false, function
 mkButton(FarmTab, "Favorite Equipped Now", function() Fav.RunOnce(false) end)
 --════════════ BAGIAN 7 — TAB CONFIG & BOOT ════════════
 --══════════════════════════ TAB 2: CONFIG ══════════════════════════
+--────────────────────────────[ TAB: AUTO HOP + PROGRESS ]────────────────────────────
+-- Paritas struktur kode baru (SAE v172610): tab "Auto Hop | Egg Finder"
+-- dan tab "Progress | Auto Progression".
+
+local HopTab = Window:CreateTab({ Name = "Auto Hop", Icon = "🥚" })
+mkSection(HopTab, "Egg Finder")
+mkToggle(HopTab, "hop/on", "Auto Hop", false, function(v)
+    AutoHop.on = v
+    AutoHop.tOn = os.clock()
+    AutoHop.busy = false
+    AutoHop.seen = {}
+    if type(Gill) == "table" then
+        if v then Gill.__THORHUB_AUTOHOP = true else Gill.__THORHUB_AUTOHOP = nil end
+    end
+    Tasks.Wake("autohop")
+end)
+mkDropdown(HopTab, "hop/mode", "Hop Mode",
+    { "Until An Egg Matches", "Steal Then Hop", "After A Rare Spawns" },
+    "Until An Egg Matches", function(v) AutoHop.mode = v end)
+mkDropdown(HopTab, "hop/rarity", "Rarity To Wait For", rarityChoices, "Mythic",
+    function(v) AutoHop.waitRarity = v end)
+mkSlider(HopTab, "hop/firstdelay", "First Hop Delay", 5, 120, 20, 1, "s",
+    function(v) AutoHop.firstDelay = v end)
+P(function()
+    HopTab:AddParagraph({
+        Title = "Cara kerja Auto Hop",
+        Text = "Pindah server otomatis sampai ketemu egg sesuai Rarity To Wait For. "
+            .. "Steal Then Hop: pindah setelah tiap sukses curi. After A Rare Spawns: "
+            .. "pindah begitu egg rare+ terdeteksi spawn. Status ON dipulihkan otomatis "
+            .. "setelah pindah server.",
+    })
+end)
+
+local ProgTab = Window:CreateTab({ Name = "Progress", Icon = "📈" })
+mkSection(ProgTab, "Auto Progression")
+mkToggle(ProgTab, "prog/upbase", "Auto Upgrade Base", false, function(v)
+    Progress.upBase = v Tasks.Wake("progress")
+end)
+mkToggle(ProgTab, "prog/claimcash", "Auto Claim Money", false, function(v)
+    Progress.claimCash = v Tasks.Wake("progress")
+end)
+mkToggle(ProgTab, "prog/claimindex", "Auto Claim Index", false, function(v)
+    Progress.claimIndex = v Tasks.Wake("progress")
+end)
+mkToggle(ProgTab, "prog/buytrail", "Auto Buy Trail", false, function(v)
+    Progress.buyTrail = v Tasks.Wake("progress")
+end)
+P(function()
+    ProgTab:AddParagraph({
+        Title = "Catatan",
+        Text = "Paritas tab Progress dari kode baru (SAE v172610). Auto Upgrade "
+            .. "Treadmill tetap ada di tab Farm. Auto Buy Trail membeli semua trail "
+            .. "yang tersedia di asset Directory.",
+    })
+end)
+
 local ConfigTab = Window:CreateTab({ Name = "Config", Icon = "💾" })
 
 local configListLabel = nil
@@ -11565,7 +11793,8 @@ mkSection(ConfigTab, "Info")
 ConfigTab:AddParagraph({
     Title = "ThorHub — Auto Farm (Steal an Egg)",
     Text = "Edisi Auto Farm: hanya fitur farming + UI floating ThorUi. "
-        .. "Semua fitur native, tanpa obfuscate, tanpa promosi. "
+        .. "Semua fitur native, tanpa obfuscate, tanpa promosi. Basis: kode baru "
+        .. "Chilli (SAE v172610, Okt 2026) - fitur farm diparitaskan penuh. "
         .. "PENTING: jalankan script ini SAJA — jangan bersamaan dengan script hub "
         .. "lain (mis. Chilli Hub); dua engine farm yang jalan bareng bisa saling "
         .. "ganggu dan memunculkan error. Error console dengan nama script acak "
@@ -11604,6 +11833,16 @@ task.delay(1.2, function()
         print("[ThorHub] 2 UI aktif: menu utama + panel daftar telur (ala script asli)")
     end
 end)
+
+-- Auto Hop: pulihkan ON setelah hop server (flag genv, basis kode baru)
+if type(Gill) == "table" and Gill.__THORHUB_AUTOHOP then
+    task.delay(1.5, function()
+        local el = Config.Elements["hop/on"]
+        if el and el.Set then
+            P(function() el:Set(true, true) end)
+        end
+    end)
+end
 
 -- auto load setelah teleport (queueReload cek queue_on_teleport sendiri)
 queueReload()
