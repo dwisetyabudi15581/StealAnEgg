@@ -1,7 +1,7 @@
 --[[════════════════════════════════════════════════════════════════════════════
   ⚡ THORHUB — AUTO FARM (Steal an Egg)
   Edisi khusus AUTO FARM: hanya mesin farming + UI floating (ThorUi ⚡).
-  v1.1 — self-contained: ThorUi dibundel (embed), boot shield, log jelas.
+  v1.2 — self-contained: ThorUi dibundel (embed), boot shield, log jelas, guard syncGroup.
   Semua fitur diimplementasi ulang secara native (tanpa kode obfuscate).
   Tanpa promosi apa pun: tidak ada link Discord pihak ketiga, tidak ada
   bootstrap pihak ketiga, tidak ada teks "Chilli/Venyx".
@@ -33,9 +33,9 @@ if Gill.__THORHUB_AF_LOADED then
     if type(old) == "function" then pcall(old) end
 end
 
--- v1.1: log bootstrap — memudahkan verifikasi versi yang berjalan
+-- v1.2: log bootstrap — memudahkan verifikasi versi yang berjalan
 if type(print) == "function" then
-    print("[ThorHub] Auto Farm v1.1 dimuat (self-contained: ThorUi embedded)")
+    print("[ThorHub] Auto Farm v1.2 dimuat (self-contained: ThorUi embedded)")
 end
 
 local Services = {}
@@ -5044,6 +5044,7 @@ end
 
 --  Sinkronisasi grup eksklusif — dipanggil setiap nilai toggle berubah.
 local function syncGroup(el)
+    if type(el) ~= "table" then return end
     local g = el._group
     if type(g) ~= "table" then
         return
@@ -11133,7 +11134,7 @@ end
 
 --────────────────────────────[ MENU HELPERS ]────────────────────────────
 
--- ==== BOOT SHIELD v1.1 ====--
+-- ==== BOOT SHIELD v1.2 ====--
 -- Pembangunan menu + seluruh boot sequence dibungkus pcall. Kalau game
 -- update / API berubah, error muncul sebagai "warn [ThorHub] BOOT GAGAL:"
 -- yang jelas — bukan stack trace misterius yang menyesatkan.
@@ -11567,7 +11568,10 @@ ConfigTab:AddParagraph({
         .. "Semua fitur native, tanpa obfuscate, tanpa promosi. "
         .. "PENTING: jalankan script ini SAJA — jangan bersamaan dengan script hub "
         .. "lain (mis. Chilli Hub); dua engine farm yang jalan bareng bisa saling "
-        .. "ganggu dan memunculkan error. Data game: Directory "
+        .. "ganggu dan memunculkan error. Error console dengan nama script acak "
+        .. "(kode LPH, huruf acak 20+ karakter) berasal dari script Chilli Hub lain "
+        .. "yang masih berjalan di executor (cek tab Auto-Exec), BUKAN dari ThorHub - "
+        .. "log ThorHub selalu berawalan [ThorHub]. Data game: Directory "
         .. (Repo.DirectoryOK and "OK" or "n/a") .. ", Save replica "
         .. (Repo.SaveOK and "OK" or "n/a") .. ", Filesystem "
         .. (FS.ok and "OK" or "n/a") .. ".",
@@ -11595,7 +11599,10 @@ end
 task.delay(1.2, function()
     local saved = Config.Get("panel/open")
     if saved == nil and Gill then saved = Gill.__THORHUB_PANEL_OPEN end
-    if saved ~= false then StealPanel.Show() end
+    if saved ~= false then
+        StealPanel.Show()
+        print("[ThorHub] 2 UI aktif: menu utama + panel daftar telur (ala script asli)")
+    end
 end)
 
 -- auto load setelah teleport (queueReload cek queue_on_teleport sendiri)
