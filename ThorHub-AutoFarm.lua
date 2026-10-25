@@ -1,11 +1,11 @@
---[[ THORHUB - STEAL AN EGG | v3.1 (build ringkas)
-  Isi sama dengan v3.0: rewrite persis kode baru StealAnEggg (SAE v172610) -
+--[[ THORHUB - STEAL AN EGG | v3.2 (build ringkas + struktur executor-safe)
+  Isi sama dengan v3.0 (rewrite persis kode baru StealAnEggg, SAE v172610):
   menu 8 tab 1:1 (Farm/Event/Admin Abuse/Player/Predictor/Server/Misc/Auto Hop),
-  Steal Panel metode hijack HUD game (tombol Pets + frame ActivePets: kartu
-  prioritas naik/turun/batal/rank, Sort, tombol Steal/Halloween/filter).
-  v3.1 = v3.0 dipadatkan (komentar/indentasi dibuang) supaya lolos limit
-  ukuran download executor (v3.0 554KB gagal parse di beberapa executor;
-  v3.1 337KB, di bawah v2.0 457KB yang terbukti jalan)).
+  Steal Panel metode hijack HUD game, Delivery 3-mode, Instant Steal V3,
+  ESP/Combat/Performance/Server, Auto Hop sync filter.
+  v3.2 = v3.0 dipadatkan + section dibungkus do-block: local utama turun
+  204 -> 128 (limit compiler executor 200; v3.0/v3.1 gagal "Out of local
+  registers"). Struktur do-block tidak mengubah perilaku sama sekali.
   Loader: loadstring(game:HttpGet("https://raw.githubusercontent.com/dwisetyabudi15581/StealAnEgg/main/ThorHub-Loader.lua"))()
 ]]
 
@@ -18,7 +18,7 @@ local old = Gill.__THORHUB_AF_DESTROY
 if type(old) == "function" then pcall(old) end
 end
 if type(print) == "function" then
-print("[ThorHub] v3.1 dimuat (rewrite basis kode baru StealAnEggg — menu 8 tab + Steal Panel hijack HUD)")
+print("[ThorHub] v3.2 dimuat (rewrite basis kode baru StealAnEggg — menu 8 tab + Steal Panel hijack HUD)")
 end
 local Services = {}
 local function S(name)
@@ -106,6 +106,7 @@ end]], SOURCE_URL, mirrorUrl(SOURCE_URL)))
 end
 local Repo = { Directory = nil, DirectoryOK = false, Mut = nil, Save = nil,
 SaveOK = false, SaveGet = nil, SaveWatch = nil }
+do
 local function resolveDirectoryFrom(mod)
 if type(mod) ~= "table" then return nil end
 local t = mod.Assets
@@ -477,6 +478,7 @@ if ok and type(m) == "number" then mutMult = m end
 end
 return rate * mult * mutMult
 end
+end
 local eggSpecies, petSpecies = nil, nil
 function Repo.Species()
 if eggSpecies then return eggSpecies, petSpecies end
@@ -496,6 +498,7 @@ table.sort(petSpecies)
 end
 return eggSpecies, petSpecies
 end
+do
 local areaCache, areaAt = nil, 0
 function Repo.AreaNames()
 local now = os.clock()
@@ -634,6 +637,7 @@ local ok, res = pcall(cycleMod.IsNightPhase, workspace:GetServerTimeNow())
 if ok then return res == true end
 end
 return false
+end
 end
 local Movement = { Owner = nil, PlaceWanted = false, StealFirst = false }
 local Character = { Parts = nil, Original = nil, Clone = nil }
@@ -1453,7 +1457,9 @@ if e.Placement == nil then out[uid] = e end
 end
 return out
 end
-local Steal = {
+local Steal, stealFilterOk, isCarrying, firePromptInstance
+do
+Steal = {
 on = false, areas = {}, minRarity = 0, minValue = 0, specific = {},
 lock = nil,
 pick = {},
@@ -1536,7 +1542,7 @@ end
 end
 return false
 end
-local function stealFilterOk(egg)
+stealFilterOk = function(egg)
 if egg.Kind == "Halloween" and Steal.hwFilterHook then
 local ok = Steal.hwFilterHook(egg)
 if ok == false then return false end
@@ -1631,7 +1637,7 @@ carryState.uid = nil
 end
 end
 end)
-local function isCarrying()
+isCarrying = function()
 return carryState.on == true
 end
 local function carryingUid()
@@ -1818,7 +1824,7 @@ end
 if Steal.delivery == "Instant Steps" then return 60 end
 return Steal.carryK * 40
 end
-local function firePromptInstance(prompt)
+firePromptInstance = function(prompt)
 if not prompt or not prompt.Parent then return false end
 pcall(function() prompt.HoldDuration = 0 end)
 if fireproximityprompt then
@@ -2217,6 +2223,7 @@ Tasks.Status("steal", "Idle  |  " .. total .. " egg terlihat, semua tercegat fil
 end
 end
 end)
+end
 Repo.Connect("RE/EggWorld/FieldEggRedeemVerdict", function(data)
 Steal.lastDeliver = os.clock()
 if type(data) == "table" then
@@ -4142,6 +4149,8 @@ end
 end)
 end)
 end
+local StealPanel
+do
 local function spSeq(points)
 local kp = {}
 for _, p in ipairs(points) do kp[#kp + 1] = ColorSequenceKeypoint.new(p[1], p[2]) end
@@ -4298,7 +4307,7 @@ end
 end)
 return c
 end
-local StealPanel = {
+StealPanel = {
 gui = nil, panelGui = nil, root = nil, list = nil, rows = {},
 btnGui = nil, btn = nil, hudConns = {},
 open = false, built = false, animating = false,
@@ -4853,6 +4862,7 @@ end)
 end
 StealPanel.list = list
 StealPanel.built = true
+end
 end
 Tasks.Add("stealpanel", 0.6, function()
 if StealPanel.open then StealPanel.Refresh() end
@@ -11494,7 +11504,7 @@ Text = "Hop terus selama belum ada egg yang cocok filter (Until An Egg "
 end)
 P(function()
 FarmTab:AddParagraph({
-Title = "ThorHub v3.1 — basis kode baru",
+Title = "ThorHub v3.2 — basis kode baru",
 Text = "Struktur menu & metode engine dipetakan 1:1 dari kode baru "
 .. "Chilli Hub (SAE v172610): 8 tab, Delivery 3-mode (Tween / "
 .. "Instant Steps / Fast Tween), Instant Steal V3 via Admin "
@@ -11550,7 +11560,7 @@ if ThorUI then P(function() ThorUI:Destroy() end) end
 end
 Gill.__THORHUB_AF_LOADED = true
 Gill.__THORHUB_AF_DESTROY = DestroyAll
-Notify("⚡ ThorHub", "v3.1 siap! Menu 8 tab persis kode baru + Steal Panel hijack HUD.", 6)
+Notify("⚡ ThorHub", "v3.2 siap! Menu 8 tab persis kode baru + Steal Panel hijack HUD.", 6)
 if not Repo.DirectoryOK then
 task.delay(2, function()
 Notify("ThorHub", "Asset Directory tidak ketemu — beberapa filter memakai fallback", 6)
@@ -11563,7 +11573,7 @@ end)
 end
 end)
 if bootOK then
-print("[ThorHub] v3.1 menu siap. Buka/tutup: tombol petir melayang atau RightControl.")
+print("[ThorHub] v3.2 menu siap. Buka/tutup: tombol petir melayang atau RightControl.")
 else
 warn("[ThorHub] BOOT GAGAL: " .. tostring(bootErr))
 pcall(function()
@@ -11574,4 +11584,4 @@ Duration = 10,
 })
 end)
 end
--- THORHUB-EOF v3.1
+-- THORHUB-EOF v3.2
