@@ -1,7 +1,7 @@
 --═══════════════════════════════════════════════════════════════════════════════
 --  ⚡ THORHUB — FARM · Steal an Egg
 --  ──────────────────────────────────────────────────────────────────────────────
---  Versi      : 5.0  (rewrite TAB FARM LENGKAP — 11 seksi, ditulis dari nol)
+--  Versi      : 5.1  (Auto Steal diperkuat + STEAL PANEL ala kode asli)
 --  Library UI : ThorUi  (github.com/dwisetyabudi15581/ThorUi)
 --  Platform   : PC & Mobile (drag bebas, keybind RightControl)
 --
@@ -12,7 +12,7 @@
 --    1.  AUTO STEAL        — curi telur area/base, Delivery Tween /
 --        Instant Steps / Fast Tween, prioritas value/rarity/weight/mutation,
 --        filter area & spesies, min rarity & value, missing-index,
---        drop Safe Zone, anti-guard panel, wrong-egg handler.
+--        drop Safe Zone, anti-guard panel, wrong-egg handler, Steal Panel.
 --    2.  AUTO PROGRESSION  — beli trail, upgrade base, upgrade treadmill,
 --        klaim uang offline, klaim reward index.
 --    3.  AUTO MUTATION     — pakai item mutasi (Fractured/Scrambled/
@@ -29,9 +29,25 @@
 --    10. PRIORITY ROTATION — gantian mancing <-> treadmill (Timer /
 --        Every Day).
 --    11. PRIORITY          — antrian tugas aktif (Task Queue).
+--
+--  PERBAIKAN v5.1 (hasil audit alur Auto Steal):
+--    • Anti-macet: tugas curi dibungkus pcall + watchdog 150 dtk (dulu
+--      1 error runtime = Heist.busy nyangkut = mesin mati total).
+--    • Snapshot RF: timeout busy 8 dtk (dulu bisa beku selamanya).
+--    • Deteksi "membawa telur" diperluas (Tool apa pun + model ber-Hitbox
+--      yang di-weld ke karakter — menangkap telur hasil curi base).
+--    • Ride.carry meluncurkan Y menuju target (dulu Y terkunci di posisi
+--      awal — antaran bisa mandek di elevasi salah).
+--    • STEAL PANEL (metode kode asli — hijack HUD game: kloning tombol
+--      Pets + frame ActivePets): kartu telur lengkap (rank, warna rarity,
+--      nama, $/s, detail, jarak), klik = curi sekarang, ★ prioritas,
+--      ▲▼ urut, X batal, tombol Sort (siklus prioritas), Steal (sync
+--      toggle), filter All/Halloween/Field, slide, ingat status terbuka.
+--    • Chip Anti Guard berganti warna (merah/hijau) + jumlah & jarak
+--      guard aktif terdekat (dulu teks putih statis).
 --═══════════════════════════════════════════════════════════════════════════════
 
-local THORHUB_VERSION = "5.0"
+local THORHUB_VERSION = "5.1"
 local THORUI_URL      = "https://raw.githubusercontent.com/dwisetyabudi15581/ThorUi/main/ThorUi.lua"
 local CONFIG_FOLDER   = "ThorHub"
 local CONFIG_FILE     = "ThorHub_StealAnEgg_Farm.json"
@@ -594,14 +610,26 @@ end
 --═══════════════════════════════════════════════════════════════════════════════
 local Prey = {}
 do
-    --// snapshot non-blocking: invoke jalan di task terpisah, hasil di-cache
-    local snap, snapAt, snapBusy, snapFails = nil, -math.huge, false, 0
+    --// snapshot non-blocking: invoke jalan di task terpisah, hasil di-cache.
+    -- v5.1: busy punya TIMEOUT 8 dtk — InvokeServer yang menggantung tidak
+    -- lagi membekukan snapshot selamanya (bug lama: snapBusy tak pernah
+    -- reset -> daftar target bergantung fallback scan saja).
+    local snap, snapAt, snapBusy, snapBusyAt, snapFails =
+        nil, -math.huge, false, 0, 0
     function Prey.snapshot(maxAge)
         local now = os.clock()
         if snap and (now - snapAt) < (maxAge or 2) then return snap end
-        if snapBusy then return snap end
+        if snapBusy then
+            if (now - snapBusyAt) > 8 then
+                snapBusy = false      -- invoke menggantung: anggap gagal
+                snapFails = snapFails + 1
+            else
+                return snap
+            end
+        end
         if snapFails >= 5 and snap and (now - snapAt) < 15 then return snap end
         snapBusy = true
+        snapBusyAt = now
         task.spawn(function()
             local ok, res = pcall(Net.invoke, "RF/EggWorld/AskFieldEggSnapshot")
             if ok and type(res) == "table" and type(res.Records) == "table" then
@@ -1019,6 +1047,9 @@ do
 
     -- antar pakai velocity: matikan collision, jaga ketinggian, pulihkan ragdoll.
     -- speedAbs = kecepatan absolut studs/dtk (Fast Tween / Tween WalkSpeed x1.5)
+    -- v5.1: ketinggian jaga (heldY) kini MELUNCUR menuju Y target — dulu
+    -- terkunci di Y posisi ambil telur, antaran bisa mandek di elevasi salah
+    -- dan verdict tak pernah terpicu.
     function Ride.carry(pos, done, timeout, speedAbs)
         timeout = timeout or 30
         local tEnd = os.clock() + timeout
@@ -1030,6 +1061,11 @@ do
             if not root then break end
             if done and done() then break end
             if heldY == nil then heldY = root.Position.Y end
+            -- luncurkan ketinggian jaga menuju ketinggian target (cepat saat
+            -- sudah dekat secara horizontal)
+            local dHoriz = math.sqrt((pos.X - root.Position.X) ^ 2
+                + (pos.Z - root.Position.Z) ^ 2)
+            heldY = heldY + (pos.Y - heldY) * (dHoriz < 24 and 0.25 or 0.06)
             if Ride.ragged() then
                 Ride.calm()
                 task.wait(0.15)
@@ -1830,6 +1866,7 @@ Engine.every(1.0, function()
             StealBoard:Set("carry",     { Value = Heist.carrying and "Membawa telur" or "Kosong" })
             StealBoard:Set("targets",   { Value = (Heist.on or Heist.busy)
                 and tostring(#Prey.all()) or "-" })
+            StealBoard:Set("queue",     { Value = tostring(#Heist.pick) })
             StealBoard:Set("stealstate",{ Value = Heist.on and Heist.state or "Off" })
             StealBoard:Set("best",      { Value = Heist.best or "-" })
         end)
@@ -1941,8 +1978,9 @@ Heist = {
     minRarity = "Any", minValue = 0,
     areas = {}, specific = {},
     missingIndex = false, dropSafe = false, agPanel = true,
-    busy = false, carrying = false, carriedUid = nil, seenAt = 0,
+    busy = false, busyAt = nil, carrying = false, carriedUid = nil, seenAt = 0,
     bad = {}, blocked = {},
+    pick = {}, lock = nil,   -- v5.1: antrean curi dari Steal Panel (★ / klik)
     stolen = 0, delivered = 0, best = nil, bestRank = -1,
     lastVerdict = 0,
     state = "Idle",
@@ -2022,7 +2060,10 @@ local function dropViaModule()
 end
 
 --// deteksi "sedang membawa telur": record snapshot (server bilang kita
--- pembawanya) -> model GUID-32 weld ke karakter -> Tool bernama uid.
+-- pembawanya) -> model telur weld ke karakter -> Tool di tangan.
+-- v5.1 diperluas: model weld tidak lagi harus bernama GUID-32 (telur hasil
+-- curi base pemain lain bisa bernama lain tapi punya Hitbox); Tool apa pun
+-- di tangan dihitung membawa (uid = atribut Uid / nama tool).
 local function detectCarryNow()
     local char = LocalPlayer.Character
     if not char then return nil end
@@ -2037,7 +2078,11 @@ local function detectCarryNow()
         end
     end
     for _, m in ipairs(workspace:GetChildren()) do
-        local isEgg = safe(function() return m:IsA("Model") and #m.Name == 32 end)
+        local isEgg = safe(function()
+            if not m:IsA("Model") then return false end
+            if #m.Name == 32 then return true end
+            return m:FindFirstChild("Hitbox") ~= nil
+        end)
         if isEgg then
             local welded = safe(function()
                 for _, j in ipairs(m:GetDescendants()) do
@@ -2052,15 +2097,21 @@ local function detectCarryNow()
                 end
                 return false
             end)
-            if welded then return tostring(m.Name) end
+            if welded then
+                local au = safe(function() return m:GetAttribute("Uid") end)
+                if type(au) == "string" and #au >= 4 then return au end
+                return tostring(m.Name)
+            end
         end
     end
     for _, t in ipairs(char:GetChildren()) do
         if safe(function() return t:IsA("Tool") end) then
             local nm = tostring(t.Name)
             local au = safe(function() return t:GetAttribute("Uid") end)
-            if #nm == 32 then return nm end
             if type(au) == "string" and #au >= 8 then return au end
+            if #nm == 32 then return nm end
+            -- v5.1: tool apa pun di tangan saat mencuri = dianggap membawa
+            return nm
         end
     end
     -- atribut dimensi event (bila sedang berjalan)
@@ -2116,10 +2167,12 @@ local function guardSnapshot()
     return guardCache
 end
 
--- guard berjaga dekat posisi (radius 35 stud) sedang aktif?
-local function guardAwakeNear(pos)
+-- info guard aktif terdekat dari posisi (radius stud): {state, dist} | nil
+-- v5.1: mengembalikan jarak & state (dipakai chip anti-guard: jumlah & jarak)
+local function guardInfo(pos, radius)
     local list = guardSnapshot()
     if type(list) ~= "table" or not pos then return nil end
+    local best = nil
     for _, inst in ipairs(list) do
         local gs = safe(function() return inst:GetAttribute("GuardState") end)
         if type(gs) == "string" and gs ~= "Sleeping" then
@@ -2127,12 +2180,22 @@ local function guardAwakeNear(pos)
                 if inst:IsA("BasePart") then return inst.Position end
                 if inst:IsA("Model") then return inst:GetPivot().Position end
             end)
-            if gp and (gp - pos).Magnitude < 35 then
-                return gs
+            if gp then
+                local d = (gp - pos).Magnitude
+                if d < (radius or 35) then
+                    if not best or d < best.dist then
+                        best = { state = gs, dist = d }
+                    end
+                end
             end
         end
     end
-    return nil
+    return best
+end
+
+-- guard berjaga dekat posisi (radius 35 stud) sedang aktif?
+local function guardAwakeNear(pos)
+    return guardInfo(pos, 35)
 end
 
 -- tunggu guard tidur (maks 3 dtk): menyerobot guard aktif = pasti ragdoll
@@ -2294,9 +2357,36 @@ end
 
 local function pickTarget()
     local now = os.clock()
+    local targets = Prey.all()
+    -- v5.1: ANTREAN PANEL MENANG TANPA FILTER (pola kode asli): pilihan
+    -- eksplisit (klik kartu / ★) tidak dicegat Min Rarity/Value/dll.;
+    -- key basi otomatis dibuang dari antrean. Urutan: pick -> lock.
+    if Heist.lock or next(Heist.pick) then
+        local byKey = {}
+        for _, e in ipairs(targets) do byKey[e.key] = e end
+        local queue = {}
+        for _, k in ipairs(Heist.pick) do queue[#queue + 1] = k end
+        if Heist.lock then queue[#queue + 1] = Heist.lock end
+        for _, k in ipairs(queue) do
+            local e = byKey[k]
+            if e and e.pos
+                and (Heist.bad[e.key] or 0) <= now
+                and (Heist.blocked[tostring(e.uid)] or 0) <= now then
+                return e
+            end
+            -- key antrean tidak valid lagi -> buang
+            local idx = table.find(Heist.pick, k)
+            if idx then table.remove(Heist.pick, idx) end
+            if Heist.lock == k then Heist.lock = nil end
+        end
+    end
+    -- v5.1: AUTO hanya telur AREA (pola kode asli) — telur base pemain lain
+    -- hanya bisa dicuri MANUAL lewat klik kartu di Steal Panel.
     local best, bestScore = nil, -math.huge
-    for _, egg in ipairs(Prey.all()) do
-        if (Heist.bad[egg.key] or 0) > now then
+    for _, egg in ipairs(targets) do
+        if egg.kind == "Base" then
+            -- dilewati auto (manual saja via panel)
+        elseif (Heist.bad[egg.key] or 0) > now then
             -- masih di-blacklist sementara
         elseif (Heist.blocked[tostring(egg.uid)] or 0) > now then
             -- pernah direbut guard barusan
@@ -2625,26 +2715,35 @@ local function stealOne(egg)
     end
 
     if res == "ok" and Heist.carrying then
-        -- cek Wrong Egg: telur lain nyasar ke tangan?
-        local heldUid = tostring(Heist.carriedUid or "")
-        local wantUid = tostring(egg.uid or "")
-        local wrong = heldUid ~= "" and wantUid ~= ""
-            and heldUid ~= wantUid and heldUid ~= "halloween"
-        if wrong then
-            local alt = heldEntry(heldUid)
-            if alt and filterOk(alt) then
-                -- telur lain tapi masih lolos filter: tetap diantar
-                Heist.state = "Telur lain yang cocok di tangan — tetap diantar"
-                recordSuccess(alt)
-                deliverEgg(alt)
-            else
-                Heist.state = "Salah telur di tangan — dilepas"
-                dropCarried()
-                Heist.bad[egg.key] = os.clock() + 4
-            end
-        else
+        if egg.kind == "Base" then
+            -- v5.1: telur base diambil lewat StealPrompt SPESIFIK — uid di
+            -- tangan memang berbeda dari uid render (bukan salah telur);
+            -- langsung antar tanpa wrong-egg check (dulu malah dijatuhkan!)
             recordSuccess(egg)
             deliverEgg(egg)
+        else
+            -- cek Wrong Egg (hanya telur AREA: prompt bisa menyambar telur
+            -- sebelah — telur lain nyasar ke tangan)
+            local heldUid = tostring(Heist.carriedUid or "")
+            local wantUid = tostring(egg.uid or "")
+            local wrong = heldUid ~= "" and wantUid ~= ""
+                and heldUid ~= wantUid and heldUid ~= "halloween"
+            if wrong then
+                local alt = heldEntry(heldUid)
+                if alt and filterOk(alt) then
+                    -- telur lain tapi masih lolos filter: tetap diantar
+                    Heist.state = "Telur lain yang cocok di tangan — tetap diantar"
+                    recordSuccess(alt)
+                    deliverEgg(alt)
+                else
+                    Heist.state = "Salah telur di tangan — dilepas"
+                    dropCarried()
+                    Heist.bad[egg.key] = os.clock() + 4
+                end
+            else
+                recordSuccess(egg)
+                deliverEgg(egg)
+            end
         end
     elseif res == "gone" or res == "taken" then
         Heist.bad[egg.key] = os.clock() + 8
@@ -2655,25 +2754,47 @@ local function stealOne(egg)
     end
 end
 
---// dispatcher: antar yang sedang dibawa ATAU cari target baru
+--// dispatcher: antar yang sedang dibawa ATAU cari target baru.
+-- v5.1 ANTI-MACET: tugas dibungkus pcall (error runtime tidak lagi
+-- membuat Heist.busy nyangkut = mesin mati total) + watchdog memaksa
+-- reset bila satu tugas menggantung lebih dari 150 dtk.
+local function dispatchSteal(fn)
+    Heist.busy = true
+    Heist.busyAt = os.clock()
+    task.spawn(function()
+        local ok, err = pcall(fn)
+        if not ok then
+            Heist.state = "Error internal (dilanjutkan): " .. tostring(err)
+            print("[ThorHub][Steal] " .. tostring(err))
+        end
+        Heist.busy = false
+        Heist.busyAt = nil
+    end)
+end
+
+Engine.every(5, function()
+    if Heist.busy and Heist.busyAt
+        and (os.clock() - Heist.busyAt) > 150 then
+        Heist.busy = false
+        Heist.busyAt = nil
+        Heist.state = "Reset otomatis — tugas sebelumnya menggantung"
+        print("[ThorHub][Steal] watchdog: reset task yang menggantung")
+    end
+end)
+
 Engine.every(0.4, function()
     if not Heist.on then return end
     if Heist.busy then return end
     if Heist.carrying then
-        Heist.busy = true
-        task.spawn(function()
-            deliverEgg({ name = "?", uid = Heist.carriedUid, key = "F:" .. tostring(Heist.carriedUid) })
-            Heist.busy = false
+        dispatchSteal(function()
+            deliverEgg({ name = "?", uid = Heist.carriedUid,
+                key = "F:" .. tostring(Heist.carriedUid) })
         end)
         return
     end
     local target = pickTarget()
     if target then
-        Heist.busy = true
-        task.spawn(function()
-            stealOne(target)
-            Heist.busy = false
-        end)
+        dispatchSteal(function() stealOne(target) end)
     else
         local total = #Prey.all()
         if total == 0 then
@@ -2684,7 +2805,7 @@ Engine.every(0.4, function()
     end
 end)
 
---// aksi manual: curi satu kali sekarang (dipakai tombol UI)
+--// aksi manual: curi satu kali sekarang (dipakai tombol UI & Steal Panel)
 function Heist.stealOnce()
     if Heist.busy then
         UI.toast("🥷 Auto Steal", "Mesin masih sibuk — tunggu sebentar.", 3)
@@ -2692,10 +2813,8 @@ function Heist.stealOnce()
     end
     if Heist.carrying then
         UI.toast("🥷 Auto Steal", "Kamu sedang membawa telur — diantar dulu.", 3)
-        Heist.busy = true
-        task.spawn(function()
+        dispatchSteal(function()
             deliverEgg({ name = "?", uid = Heist.carriedUid })
-            Heist.busy = false
         end)
         return
     end
@@ -2704,15 +2823,32 @@ function Heist.stealOnce()
         UI.toast("🥷 Auto Steal", "Tidak ada target yang lolos filter.", 4)
         return
     end
-    Heist.busy = true
-    task.spawn(function()
-        stealOne(target)
-        Heist.busy = false
-    end)
+    dispatchSteal(function() stealOne(target) end)
 end
 
---// chip anti-guard kanan-bawah (status guard sekitar) saat Auto Steal aktif
+--// chip anti-guard kanan-bawah (status guard sekitar) saat Auto Steal aktif.
+-- v5.1: teks kini BERGANTI WARNA (merah = guard aktif dekat, hijau = aman)
+-- + menampilkan jarak & state guard aktif terdekat (pola kode asli:
+-- "GUARD | nearby - careful" merah / "GUARD | clear" hijau).
+-- bersihkan chip sesi lama bila script di-execute ulang
 local GuardHud = { gui = nil }
+do
+    local scopes = {}
+    if type(gethui) == "function" then
+        local h = safe(gethui)
+        if h then table.insert(scopes, h) end
+    end
+    local pg = safe(function() return LocalPlayer:FindFirstChild("PlayerGui") end)
+    if pg then table.insert(scopes, pg) end
+    for _, scope in ipairs(scopes) do
+        local kids = safe(function() return scope:GetChildren() end) or {}
+        for _, d in ipairs(kids) do
+            if tostring(d.Name) == "ThorHubGuardPanel" then
+                safe(function() d:Destroy() end)
+            end
+        end
+    end
+end
 Engine.every(0.5, function()
     local want = Heist.on and Heist.agPanel
     if not want then
@@ -2731,7 +2867,7 @@ Engine.every(0.5, function()
             local chip = Instance.new("Frame")
             chip.AnchorPoint = Vector2.new(1, 1)
             chip.Position = UDim2.new(1, -10, 1, -10)
-            chip.Size = UDim2.new(0, 190, 0, 30)
+            chip.Size = UDim2.new(0, 210, 0, 30)
             chip.BackgroundColor3 = Color3.fromRGB(24, 28, 42)
             chip.BackgroundTransparency = 0.2
             chip.BorderSizePixel = 0
@@ -2743,7 +2879,7 @@ Engine.every(0.5, function()
             lbl.TextSize = 12
             lbl.TextColor3 = Color3.fromRGB(255, 255, 255)
             lbl.TextXAlignment = Enum.TextXAlignment.Left
-            lbl.Text = "GUARD  |  memeriksa"
+            lbl.Text = "GUARD  |  checking"
             lbl.Name = "Lbl"
             lbl.Parent = chip
             local corner = Instance.new("UICorner")
@@ -2761,21 +2897,847 @@ Engine.every(0.5, function()
         local lbl = chip and chip:FindFirstChild("Lbl")
         if not lbl then return end
         local root = Ride.root()
-        local stateTxt
+        local stateTxt, col
         if not root then
             stateTxt = "GUARD  |  karakter belum siap"
+            col = Color3.fromRGB(230, 230, 240)
         else
-            local awake = guardAwakeNear(root.Position)
-            if awake then
-                stateTxt = "GUARD  |  AKTIF di dekatmu!"
+            local info = guardInfo(root.Position, 120)
+            if info then
+                stateTxt = "GUARD  |  AKTIF! " .. math.floor(info.dist + 0.5) .. "m"
+                    .. "  (" .. tostring(info.state) .. ")"
+                col = Color3.fromRGB(255, 92, 100)      -- merah: bahaya
             elseif Heist.busy then
-                stateTxt = "GUARD  |  aman — sedang bekerja"
+                stateTxt = "GUARD  |  aman — sedang mengantar"
+                col = Color3.fromRGB(120, 255, 160)    -- hijau
             else
                 stateTxt = "GUARD  |  aman"
+                col = Color3.fromRGB(120, 255, 160)    -- hijau
             end
         end
         lbl.Text = stateTxt
+        lbl.TextColor3 = col
     end)
+end)
+
+--═══════════════════════════════════════════════════════════════════════════════
+--  BAGIAN 5C · STEAL PANEL — panel curi ala kode asli (hijack HUD game)
+--  Dipetakan dari modul HUD kode baru Steal an Egg:
+--    * tombol toggle = KLONING tombol Pets game, menempel di kolom tombol
+--      kanan (RightButtons), mengikuti posisi tombol Eggs tiap frame
+--    * panel = KLONING frame ActivePets game, slide dari kanan, judul
+--      diganti "Steal Panel"
+--    * header panel: tombol "Sort: <prioritas>" (siklus 5 mode, sync
+--      elemen menu Farm > Auto Steal > Steal Priority) + tombol tutup ">"
+--    * baris tombol: Steal (sync toggle Auto Steal) · filter
+--      All/Halloween/Field (tombol HW kode asli = fitur tab Admin, di luar
+--      lingkup rewrite tab Farm — tidak disertakan)
+--    * kartu telur: rank #N, blok warna rarity, nama (+@pemilik utk telur
+--      base), $value/s, detail (rarity · area · mutasi · jarak), ★ antre
+--      prioritas, ▲▼ urut, X batal; KLIK KARTU = curi sekarang
+--    * daftar = antrean pilihan (Heist.pick) + maks 8 saran target teratas
+--      yang lolos filter
+--    * nama instance GUI dirandom + ingat status terbuka
+--  Fallback: bila HUD game tak ditemukan -> panel mandiri layout sama.
+--═══════════════════════════════════════════════════════════════════════════════
+
+local TweenService = game:GetService("TweenService")
+local RunService = game:GetService("RunService")
+
+--// ─── tema gradien (nilai identik kode asli) ────────────────────────────────
+local function spSeq(points)
+    local kp = {}
+    for _, p in ipairs(points) do
+        kp[#kp + 1] = ColorSequenceKeypoint.new(p[1], p[2])
+    end
+    return ColorSequence.new(kp)
+end
+
+local SP_Theme = {
+    Toggle = {
+        Color = spSeq({
+            { 0, Color3.fromRGB(132, 74, 255) }, { 0.34, Color3.fromRGB(178, 74, 255) },
+            { 0.6, Color3.fromRGB(255, 104, 206) }, { 0.78, Color3.fromRGB(255, 168, 232) },
+            { 1, Color3.fromRGB(146, 66, 255) },
+        }),
+        Rotation = -115, Stroke = Color3.fromRGB(44, 10, 80),
+    },
+}
+
+local SP_BG     = Color3.fromRGB(11, 14, 23)
+local SP_CARD   = Color3.fromRGB(21, 26, 41)
+local SP_STROKE = Color3.fromRGB(45, 58, 88)
+local SP_TEXT   = Color3.fromRGB(240, 244, 255)
+local SP_DIM    = Color3.fromRGB(145, 155, 180)
+local SP_GREEN  = Color3.fromRGB(88, 255, 120)
+local SP_RED    = Color3.fromRGB(255, 92, 100)
+local SP_GOLD   = Color3.fromRGB(255, 200, 60)
+
+--// ─── util GUI ──────────────────────────────────────────────────────────────
+local function spNew(class, props, parent)
+    local inst = Instance.new(class)
+    if props then
+        for k, v in pairs(props) do
+            safe(function() inst[k] = v end)
+        end
+    end
+    if parent then safe(function() inst.Parent = parent end) end
+    return inst
+end
+
+local function spRandName()
+    local ok, guid = pcall(function()
+        return HttpService:GenerateGUID(false):gsub('-', ''):sub(1, 14)
+    end)
+    if ok and guid then return guid end
+    return tostring(math.random(1000000, 9999999))
+end
+
+local function spRename(inst)
+    safe(function()
+        inst.Name = spRandName()
+        for _, d in ipairs(inst:GetDescendants()) do d.Name = spRandName() end
+    end)
+end
+
+-- klik suara (pola UiClick kode asli: pop acak)
+local function spClick()
+    safe(function()
+        local snd = Instance.new("Sound")
+        snd.SoundId = "rbxassetid://100671636189844"
+        snd.Volume = 1.5
+        snd.PlaybackSpeed = 0.93 + math.random() * 0.13
+        snd.Parent = workspace
+        snd:Play()
+        game:GetService("Debris"):AddItem(snd, 3)
+    end)
+end
+
+local function spRarityColor(num)
+    num = tonumber(num) or 0
+    local map = {
+        [1] = Color3.fromRGB(196, 200, 210), [2] = Color3.fromRGB(94, 219, 132),
+        [3] = Color3.fromRGB(86, 156, 255), [4] = Color3.fromRGB(178, 102, 255),
+        [5] = Color3.fromRGB(255, 173, 51), [6] = Color3.fromRGB(255, 84, 112),
+        [7] = Color3.fromRGB(88, 116, 255), [8] = Color3.fromRGB(255, 214, 64),
+        [9] = Color3.fromRGB(120, 240, 220), [10] = Color3.fromRGB(255, 240, 130),
+    }
+    return map[num] or Color3.fromRGB(255, 255, 255)
+end
+
+-- nama pemilik telur base dari UserId (online -> DisplayName)
+local function spOwnerName(uidStr)
+    local num = tonumber(uidStr)
+    if num then
+        local plr = safe(Players.GetPlayerByUserId, Players, num)
+        if plr then return plr.DisplayName end
+    end
+    return tostring(uidStr or "?")
+end
+
+--// ─── API antrean curi (dipakai kartu panel) ────────────────────────────────
+-- urut target sesuai prioritas aktif (pola StealPlan kode asli)
+local function spSortTargets(targets, mode)
+    local sorted = {}
+    for _, t in ipairs(targets) do sorted[#sorted + 1] = t end
+    local m = mode or Heist.priority
+    table.sort(sorted, function(a, b)
+        local ka, kb
+        if m == "Best Rarity" then
+            ka, kb = a.rarityNum or 0, b.rarityNum or 0
+        elseif m == "Biggest Weight" then
+            ka, kb = a.scale or 0, b.scale or 0
+        elseif m == "Best Mutation" then
+            ka, kb = #(a.mutations or {}), #(b.mutations or {})
+        elseif m == "Lowest Value" then
+            return (a.value or 0) < (b.value or 0)
+        else -- Highest Value (default kode asli)
+            ka, kb = a.value or 0, b.value or 0
+        end
+        if ka ~= kb then return ka > kb end
+        return (a.value or 0) > (b.value or 0)
+    end)
+    return sorted
+end
+
+-- plan = antrean pilihan + maks 8 saran target lolos filter
+function Heist.plan()
+    local out, seen = {}, {}
+    for _, key in ipairs(Heist.pick) do
+        if not seen[key] then seen[key] = true out[#out + 1] = key end
+    end
+    if Heist.on then
+        local sorted = spSortTargets(Prey.all(), Heist.priority)
+        local added = 0
+        for _, egg in ipairs(sorted) do
+            if added >= 8 then break end
+            if egg.kind ~= "Base" and not seen[egg.key] and filterOk(egg) then
+                seen[egg.key] = true
+                out[#out + 1] = egg.key
+                added = added + 1
+            end
+        end
+    end
+    return out
+end
+
+-- curi telur ini SEKARANG (klik kartu)
+function Heist.now(key)
+    if type(key) ~= "string" then return end
+    Heist.pick = { key }
+    Heist.lock = key
+    if not Heist.on then
+        Heist.on = true
+        local el = El.steal
+        if el then safe(function() el:Set(true, true) end) end
+    end
+    Heist.state = "Curi sekarang (dari panel)"
+end
+
+-- antre telur ini ke posisi terdepan (★)
+function Heist.prioritize(key)
+    if type(key) ~= "string" then return end
+    local idx = table.find(Heist.pick, key)
+    if idx then table.remove(Heist.pick, idx) end
+    table.insert(Heist.pick, 1, key)
+    Heist.lock = key
+    if not Heist.on then
+        Heist.on = true
+        local el = El.steal
+        if el then safe(function() el:Set(true, true) end) end
+    end
+end
+
+-- batalkan antrean telur ini (X / ★ saat sudah antre)
+function Heist.cancel(key)
+    if type(key) ~= "string" then return end
+    local idx = table.find(Heist.pick, key)
+    if idx then table.remove(Heist.pick, idx) end
+    if Heist.lock == key then Heist.lock = nil end
+end
+
+-- geser urutan dalam plan (▲ ▼)
+function Heist.moveInPlan(key, delta)
+    local plan = Heist.plan()
+    local i = table.find(plan, key)
+    if not i then return end
+    local j = i + (delta or 0)
+    if j < 1 or j > #plan or not plan[j] then return end
+    plan[i], plan[j] = plan[j], plan[i]
+    local wasPick = {}
+    for _, k in ipairs(Heist.pick) do wasPick[k] = true end
+    Heist.pick = {}
+    for _, k in ipairs(plan) do
+        if wasPick[k] then Heist.pick[#Heist.pick + 1] = k end
+    end
+end
+
+--// ─── pencari HUD game ──────────────────────────────────────────────────────
+local function spFindGameHud()
+    local pg = safe(function() return LocalPlayer:FindFirstChildOfClass("PlayerGui") end)
+    if not pg then return nil end
+    local hud = safe(function() return pg:FindFirstChild("HUD") end)
+    if not hud then return nil end
+    local gameHud = safe(function() return hud:FindFirstChild("GameHUD") end)
+    local right = gameHud and safe(function() return gameHud:FindFirstChild("RightButtons") end)
+    local eggs = right and safe(function() return right:FindFirstChild("EggsButton") end)
+    local pets = right and safe(function() return right:FindFirstChild("PetsButton") end)
+    local active = safe(function() return pg:FindFirstChild("ActivePets") end)
+    local frame = active and safe(function() return active:FindFirstChild("Frame") end)
+    if eggs and pets and frame then
+        return { PlayerGui = pg, RightButtons = right, Eggs = eggs, Pets = pets,
+            ActivePetsFrame = frame }
+    end
+    return nil
+end
+
+local function spClone(inst)
+    local ok, c = pcall(function() return inst:Clone() end)
+    if not (ok and typeof(c) == "Instance") then return nil end
+    safe(function()
+        for _, d in ipairs(c:GetDescendants()) do
+            if d:IsA("LuaSourceContainer") then d:Destroy() end
+        end
+    end)
+    return c
+end
+
+--// ─── objek panel ───────────────────────────────────────────────────────────
+local StealPanel = {
+    panelGui = nil, root = nil, list = nil, rows = {},
+    btnGui = nil, btn = nil, hudConns = {},
+    open = false, built = false,
+    filter = "All", -- "All" | "Halloween" | "Field" (pola kode asli)
+    SORTS = { "Best Rarity", "Biggest Weight", "Best Mutation", "Highest Value", "Lowest Value" },
+    mode = "hijack", -- "hijack" (HUD game) | "own" (fallback)
+    origPos = nil,
+    lblSort = nil, rowSteal = nil, rowFilter = nil,
+}
+
+local function spDestroyOld()
+    local scopes = {}
+    if type(gethui) == "function" then
+        local h = safe(gethui)
+        if h then table.insert(scopes, h) end
+    end
+    if LocalPlayer then
+        local pg = safe(function() return LocalPlayer:FindFirstChild("PlayerGui") end)
+        if pg then table.insert(scopes, pg) end
+    end
+    for _, scope in ipairs(scopes) do
+        local kids = safe(function() return scope:GetChildren() end) or {}
+        for _, d in ipairs(kids) do
+            local nm = tostring(d.Name)
+            if nm == "ThorHubStealPanel" or nm == "ThorHubSPBtn" then
+                safe(function() d:Destroy() end)
+            end
+        end
+    end
+end
+
+-- hancurkan panel sesi lama bila script di-execute ulang
+spDestroyOld()
+
+function StealPanel.Destroy()
+    for _, c in ipairs(StealPanel.hudConns) do
+        safe(function() c:Disconnect() end)
+    end
+    StealPanel.hudConns = {}
+    if StealPanel.panelGui then safe(function() StealPanel.panelGui:Destroy() end) end
+    if StealPanel.btnGui then safe(function() StealPanel.btnGui:Destroy() end) end
+    StealPanel.panelGui = nil
+    StealPanel.btnGui = nil
+    StealPanel.btn = nil
+    StealPanel.root = nil
+    StealPanel.list = nil
+    StealPanel.rows = {}
+    StealPanel.built = false
+    StealPanel.open = false
+    StealPanel.origPos = nil
+    StealPanel.lblSort = nil
+    StealPanel.rowSteal = nil
+    StealPanel.rowFilter = nil
+end
+
+--// ─── kartu telur ───────────────────────────────────────────────────────────
+local function spBuildRow(list, egg, rank, picked)
+    local rcol = spRarityColor(egg.rarityNum)
+    local row = spNew("TextButton", {
+        Size = UDim2.new(1, -6, 0, 46),
+        BackgroundColor3 = SP_CARD, BorderSizePixel = 0, Text = "",
+        AutoButtonColor = false, LayoutOrder = rank,
+    }, list)
+    spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, row)
+    spNew("UIStroke", { Color = SP_STROKE, Thickness = 1 }, row)
+
+    -- rank / tanda antre
+    spNew("TextLabel", {
+        Size = UDim2.new(0, 26, 1, 0), Position = UDim2.new(0, 6, 0, 0),
+        BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 11,
+        TextColor3 = picked and SP_GOLD or SP_DIM,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        Text = picked and ("#" .. tostring(rank)) or tostring(rank),
+    }, row)
+
+    -- blok warna rarity sebagai ikon
+    local iconBlock = spNew("Frame", {
+        Size = UDim2.new(0, 30, 0, 30), Position = UDim2.new(0, 34, 0, 8),
+        BackgroundColor3 = rcol, BorderSizePixel = 0,
+    }, row)
+    spNew("UICorner", { CornerRadius = UDim.new(0, 8) }, iconBlock)
+
+    -- nama (+@pemilik utk telur base)
+    local nameTxt = tostring(egg.name or "?")
+    if egg.kind == "Base" then
+        nameTxt = nameTxt .. "  @" .. spOwnerName(egg.ownerUid)
+    end
+    spNew("TextLabel", {
+        Size = UDim2.new(1, -236, 0, 22), Position = UDim2.new(0, 72, 0, 4),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 13,
+        TextColor3 = SP_TEXT, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd, Text = nameTxt,
+    }, row)
+
+    -- nilai $/dtk
+    spNew("TextLabel", {
+        Size = UDim2.new(0, 74, 0, 22), Position = UDim2.new(1, -160, 0, 4),
+        BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 12,
+        TextColor3 = SP_GREEN, TextXAlignment = Enum.TextXAlignment.Right,
+        Text = "$" .. fmtNum(egg.value or 0) .. "/s",
+    }, row)
+
+    -- detail: rarity · area · mutasi · jarak
+    local dparts = { tostring(egg.rarityLabel or "?") }
+    if egg.area and egg.area ~= "" then dparts[#dparts + 1] = tostring(egg.area) end
+    if type(egg.mutations) == "table" and #egg.mutations > 0 then
+        dparts[#dparts + 1] = table.concat(egg.mutations, " ")
+    end
+    local myRoot = Ride.root()
+    if egg.pos and myRoot then
+        dparts[#dparts + 1] = tostring(math.floor((egg.pos - myRoot.Position).Magnitude + 0.5)) .. "m"
+    end
+    spNew("TextLabel", {
+        Size = UDim2.new(1, -236, 0, 16), Position = UDim2.new(0, 72, 0, 26),
+        BackgroundTransparency = 1, Font = Enum.Font.Gotham, TextSize = 10,
+        TextColor3 = SP_DIM, TextXAlignment = Enum.TextXAlignment.Left,
+        TextTruncate = Enum.TextTruncate.AtEnd,
+        Text = table.concat(dparts, "  ·  "),
+    }, row)
+
+    -- tombol aksi kanan: ▲ ▼ ★ X
+    local function actBtn(x, w, txt, col, cb)
+        local b = spNew("TextButton", {
+            Size = UDim2.new(0, w, 0, 24), Position = UDim2.new(1, x, 0, 11),
+            BackgroundColor3 = Color3.fromRGB(30, 36, 56), BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold, TextSize = 12, TextColor3 = col, Text = txt,
+        }, row)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+        safe(function() b.Activated:Connect(function() spClick() cb() end) end)
+        return b
+    end
+    local key = egg.key
+    actBtn(-88, 22, "▲", picked and SP_GOLD or SP_DIM, function()
+        Heist.moveInPlan(key, -1)
+        StealPanel.Refresh()
+    end)
+    actBtn(-64, 22, "▼", picked and SP_GOLD or SP_DIM, function()
+        Heist.moveInPlan(key, 1)
+        StealPanel.Refresh()
+    end)
+    actBtn(-40, 22, "★", picked and SP_GOLD or SP_DIM, function()
+        if picked then Heist.cancel(key) else Heist.prioritize(key) end
+        StealPanel.Refresh()
+    end)
+    actBtn(-16, 22, "X", SP_RED, function()
+        Heist.cancel(key)
+        StealPanel.Refresh()
+    end)
+
+    -- klik baris = curi sekarang
+    safe(function()
+        row.Activated:Connect(function()
+            spClick()
+            Heist.now(key)
+            Heist.state = "Curi sekarang: " .. tostring(egg.name)
+            StealPanel.Refresh()
+        end)
+    end)
+    return { row = row, key = key }
+end
+
+--// ─── refresh isi daftar ────────────────────────────────────────────────────
+function StealPanel.Refresh()
+    if not (StealPanel.list and StealPanel.open) then return end
+    for _, r in ipairs(StealPanel.rows) do
+        safe(function() r.row:Destroy() end)
+    end
+    StealPanel.rows = {}
+
+    local targets = Prey.all()
+    local byKey = {}
+    for _, t in ipairs(targets) do byKey[t.key] = t end
+
+    -- susun: plan (antrean + saran) dulu, lalu sisa lolos filter, maks 24
+    local ordered, seen = {}, {}
+    local plan = Heist.plan()
+    local pickedSet = {}
+    for _, k in ipairs(Heist.pick) do pickedSet[k] = true end
+    for _, k in ipairs(plan) do
+        local egg = byKey[k]
+        if egg then
+            local show = true
+            if StealPanel.filter == "Halloween" then show = egg.kind == "Halloween" end
+            if StealPanel.filter == "Field" then show = egg.kind ~= "Halloween" and egg.kind ~= "Base" end
+            if show then
+                seen[k] = true
+                ordered[#ordered + 1] = { egg = egg, picked = pickedSet[k] ~= nil }
+            end
+        end
+    end
+    if #ordered < 24 then
+        local sorted = spSortTargets(targets, Heist.priority)
+        for _, egg in ipairs(sorted) do
+            if #ordered >= 24 then break end
+            if not seen[egg.key] then
+                local show = true
+                if StealPanel.filter == "Halloween" then show = egg.kind == "Halloween" end
+                if StealPanel.filter == "Field" then show = egg.kind ~= "Halloween" and egg.kind ~= "Base" end
+                -- v5.1: telur BASE ikut ditampilkan (klik kartu = curi manual
+                -- — satu-satunya jalur curi telur base ala kode asli)
+                if show then
+                    seen[egg.key] = true
+                    ordered[#ordered + 1] = { egg = egg, picked = false }
+                end
+            end
+        end
+    end
+
+    for i, item in ipairs(ordered) do
+        local r = spBuildRow(StealPanel.list, item.egg, i, item.picked)
+        StealPanel.rows[#StealPanel.rows + 1] = r
+    end
+    safe(function()
+        local n = #StealPanel.rows
+        StealPanel.list.CanvasSize = UDim2.new(0, 0, 0, n * 52 + 6)
+    end)
+
+    if StealPanel.lblSort then
+        safe(function() StealPanel.lblSort.Text = "Sort: " .. tostring(Heist.priority) end)
+    end
+    if StealPanel.rowSteal then
+        safe(function()
+            StealPanel.rowSteal.Text = Heist.on and "Steal ✓" or "Steal"
+            StealPanel.rowSteal.BackgroundColor3 = Heist.on
+                and Color3.fromRGB(30, 120, 40) or Color3.fromRGB(30, 36, 56)
+        end)
+    end
+    if StealPanel.rowFilter then
+        safe(function()
+            StealPanel.rowFilter.Text = StealPanel.filter == "All" and "All"
+                or (StealPanel.filter == "Halloween" and "Halloween" or "Field")
+        end)
+    end
+end
+
+--// ─── buka/tutup + animasi slide ───────────────────────────────────────────
+function StealPanel.Show()
+    if not StealPanel.built then StealPanel.Build() end
+    if not StealPanel.root then return end
+    StealPanel.open = true
+    _G.__THORHUB_SP_OPEN = true
+    safe(function()
+        StealPanel.panelGui.Enabled = true
+        local target = StealPanel.origPos or UDim2.new(1, -12, 0.5, 0)
+        local startPos
+        if StealPanel.mode == "own" then
+            startPos = UDim2.new(1, 60, 0.5, 0)
+        else
+            startPos = UDim2.new(target.X.Scale, target.X.Offset + 60,
+                target.Y.Scale, target.Y.Offset)
+        end
+        StealPanel.root.Position = startPos
+        local tw = TweenService:Create(StealPanel.root,
+            TweenInfo.new(0.28, Enum.EasingStyle.Quart, Enum.EasingDirection.Out),
+            { Position = target })
+        tw:Play()
+    end)
+    StealPanel.Refresh()
+end
+
+function StealPanel.Hide()
+    StealPanel.open = false
+    _G.__THORHUB_SP_OPEN = false
+    if not StealPanel.root then return end
+    safe(function()
+        local target = StealPanel.origPos or UDim2.new(1, -12, 0.5, 0)
+        local startPos
+        if StealPanel.mode == "own" then
+            startPos = UDim2.new(1, 60, 0.5, 0)
+        else
+            startPos = UDim2.new(target.X.Scale, target.X.Offset + 60,
+                target.Y.Scale, target.Y.Offset)
+        end
+        local tw = TweenService:Create(StealPanel.root,
+            TweenInfo.new(0.24, Enum.EasingStyle.Quart, Enum.EasingDirection.In),
+            { Position = startPos })
+        tw:Play()
+        task.delay(0.26, function()
+            if not StealPanel.open and StealPanel.panelGui then
+                StealPanel.panelGui.Enabled = false
+            end
+        end)
+    end)
+end
+
+function StealPanel.Toggle()
+    if StealPanel.open then StealPanel.Hide() else StealPanel.Show() end
+end
+
+--// ─── BUILD ─────────────────────────────────────────────────────────────────
+function StealPanel.Build()
+    StealPanel.Destroy()
+    spDestroyOld()
+
+    local hud = spFindGameHud()
+
+    -- 1) tombol toggle (kloning tombol Pets game)
+    local btnGui = spNew("ScreenGui", {
+        ResetOnSpawn = false, DisplayOrder = 55, Name = "ThorHubSPBtn",
+    })
+    safe(function()
+        btnGui.Parent = (type(gethui) == "function" and gethui())
+            or LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    end)
+    StealPanel.btnGui = btnGui
+
+    local btn = nil
+    if hud then
+        local clone = spClone(hud.Pets)
+        if clone then
+            for _, d in ipairs(clone:GetChildren()) do
+                local n = tostring(d.Name)
+                if n == "Notification" or n == "ReadyNotification" or n == "NightImage"
+                    or n == "NightText" or n == "ConsoleButton" or n == "Badge" then
+                    safe(function() d:Destroy() end)
+                end
+            end
+            safe(function()
+                clone.Visible = true
+                clone.AnchorPoint = Vector2.new(0.5, 0.5)
+                clone.Parent = btnGui
+            end)
+            local lbl = safe(function()
+                return clone:FindFirstChild("Label") or clone:FindFirstChildOfClass("TextLabel")
+            end)
+            if lbl then safe(function() lbl.Text = "Steal" end) end
+            local grad = safe(function() return clone:FindFirstChildOfClass("UIGradient") end)
+            if grad then
+                safe(function()
+                    grad.Color = SP_Theme.Toggle.Color
+                    grad.Rotation = SP_Theme.Toggle.Rotation
+                end)
+            else
+                safe(function()
+                    local g = Instance.new("UIGradient")
+                    g.Color = SP_Theme.Toggle.Color
+                    g.Rotation = SP_Theme.Toggle.Rotation
+                    g.Parent = clone
+                end)
+            end
+            btn = clone
+            StealPanel.mode = "hijack"
+        end
+    end
+    if not btn then
+        -- fallback: tombol mandiri ⚡ bergaya sama
+        btn = spNew("TextButton", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Size = UDim2.new(0, 64, 0, 64),
+            BackgroundColor3 = Color3.fromRGB(132, 74, 255),
+            Text = "⚡", TextSize = 28, Font = Enum.Font.GothamBold,
+            TextColor3 = Color3.fromRGB(255, 255, 255), BorderSizePixel = 0,
+        }, btnGui)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 16) }, btn)
+        spNew("UIGradient", { Color = SP_Theme.Toggle.Color, Rotation = SP_Theme.Toggle.Rotation }, btn)
+        spNew("UIStroke", { Color = SP_Theme.Toggle.Stroke, Thickness = 2 }, btn)
+    end
+    StealPanel.btn = btn
+    safe(function()
+        btn.Activated:Connect(function()
+            spClick()
+            StealPanel.Toggle()
+        end)
+    end)
+
+    -- ikuti posisi kolom tombol Eggs game (mirror posisi kolom)
+    if hud and StealPanel.mode == "hijack" then
+        local conn = safe(function()
+            return RunService.RenderStepped:Connect(function()
+                if not (btn and btn.Parent and hud.Eggs and hud.Eggs.Parent) then return end
+                local ePos = hud.Eggs.AbsolutePosition
+                local eSize = hud.Eggs.AbsoluteSize
+                local gPos = btnGui.AbsolutePosition
+                local rel = UDim2.new(0, ePos.X - gPos.X + eSize.X / 2,
+                    0, ePos.Y - gPos.Y + eSize.Y * 1.5 + 8)
+                if btn.Position ~= rel then btn.Position = rel end
+            end)
+        end)
+        if conn then StealPanel.hudConns[#StealPanel.hudConns + 1] = conn end
+    else
+        safe(function() btn.Position = UDim2.new(0.5, 0, 0, 80) end)
+    end
+
+    -- 2) panel (kloning frame ActivePets game)
+    local panelGui = spNew("ScreenGui", {
+        ResetOnSpawn = false, DisplayOrder = 56, Name = "ThorHubStealPanel",
+        Enabled = false,
+    })
+    safe(function()
+        panelGui.Parent = (type(gethui) == "function" and gethui())
+            or LocalPlayer:FindFirstChildOfClass("PlayerGui")
+    end)
+    StealPanel.panelGui = panelGui
+
+    local root, list
+    if hud then
+        local frame = spClone(hud.ActivePetsFrame)
+        if frame then
+            safe(function() frame.Parent = panelGui end)
+            spRename(frame)
+            root = frame
+            StealPanel.origPos = safe(function() return frame.Position end)
+            safe(function()
+                for _, d in ipairs(frame:GetChildren()) do
+                    local n = tostring(d.Name)
+                    if n ~= "Header" and n ~= "ScrollingFrame" and n ~= "Close" then
+                        d:Destroy()
+                    end
+                end
+            end)
+            local header = safe(function() return frame:FindFirstChild("Header")
+                or frame:FindFirstChildOfClass("Frame") end)
+            if header then
+                local lbl = safe(function()
+                    return header:FindFirstChild("Title")
+                        or header:FindFirstChildOfClass("TextLabel")
+                end)
+                if lbl then safe(function() lbl.Text = "Steal Panel" end) end
+            end
+            local close = safe(function() return frame:FindFirstChild("Close") end)
+            if close then
+                local cl = safe(function() return close:FindFirstChildOfClass("TextLabel")
+                    or close:FindFirstChild("Label") end)
+                if cl then safe(function() cl.Text = ">" end) end
+                safe(function()
+                    close.Activated:Connect(function()
+                        spClick() StealPanel.Hide()
+                    end)
+                end)
+            end
+            list = safe(function() return frame:FindFirstChild("ScrollingFrame") end)
+            if list then
+                safe(function()
+                    for _, d in ipairs(list:GetChildren()) do
+                        if d:IsA("GuiObject") then d:Destroy() end
+                    end
+                end)
+            end
+        end
+    end
+    if not root then
+        -- fallback: panel mandiri layout sama
+        StealPanel.mode = "own"
+        root = spNew("Frame", {
+            AnchorPoint = Vector2.new(1, 0.5),
+            Size = UDim2.new(0, 340, 0, 460),
+            BackgroundColor3 = SP_BG, BorderSizePixel = 0, Active = true,
+        }, panelGui)
+        StealPanel.origPos = UDim2.new(1, -12, 0.5, 0)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 10) }, root)
+        spNew("UIStroke", { Color = SP_STROKE, Thickness = 1 }, root)
+        local header = spNew("Frame", {
+            Size = UDim2.new(1, 0, 0, 38), BackgroundColor3 = SP_CARD,
+            BorderSizePixel = 0,
+        }, root)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 10) }, header)
+        spNew("TextLabel", {
+            Size = UDim2.new(1, -80, 1, 0), Position = UDim2.new(0, 12, 0, 0),
+            BackgroundTransparency = 1, Font = Enum.Font.GothamBold, TextSize = 15,
+            TextColor3 = SP_TEXT, TextXAlignment = Enum.TextXAlignment.Left,
+            Text = "Steal Panel",
+        }, header)
+        local closeBtn = spNew("TextButton", {
+            Size = UDim2.new(0, 30, 0, 26), Position = UDim2.new(1, -36, 0, 6),
+            BackgroundColor3 = Color3.fromRGB(30, 36, 56), Text = ">",
+            Font = Enum.Font.GothamBold, TextSize = 14, TextColor3 = SP_DIM,
+            BorderSizePixel = 0,
+        }, header)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, closeBtn)
+        safe(function()
+            closeBtn.Activated:Connect(function()
+                spClick() StealPanel.Hide()
+            end)
+        end)
+    end
+    StealPanel.root = root
+
+    -- 3) bar tombol: Sort + Steal + Filter
+    local topRow = spNew("Frame", {
+        Size = UDim2.new(1, -16, 0, 30), Position = UDim2.new(0, 8, 0, 42),
+        BackgroundTransparency = 1,
+    }, root)
+    spNew("UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal,
+        HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        VerticalAlignment = Enum.VerticalAlignment.Center,
+        SortOrder = Enum.SortOrder.LayoutOrder, Padding = UDim.new(0, 6),
+    }, topRow)
+
+    local function topBtn(order, w, txt, cb)
+        local b = spNew("TextButton", {
+            Size = UDim2.new(0, w, 1, 0), BackgroundColor3 = Color3.fromRGB(30, 36, 56),
+            BorderSizePixel = 0, Font = Enum.Font.GothamBold, TextSize = 12,
+            TextColor3 = SP_TEXT, Text = txt, LayoutOrder = order,
+        }, topRow)
+        spNew("UICorner", { CornerRadius = UDim.new(0, 6) }, b)
+        safe(function() b.Activated:Connect(function() spClick() cb() end) end)
+        return b
+    end
+
+    -- Sort (siklus prioritas — sync dropdown Steal Priority)
+    local sortBtn = topBtn(1, 118, "Sort: " .. tostring(Heist.priority), function()
+        local idx = table.find(StealPanel.SORTS, Heist.priority) or 4
+        local nxt = StealPanel.SORTS[idx % #StealPanel.SORTS + 1]
+        Heist.priority = nxt
+        local el = El.stealPrio
+        if el then safe(function() el:Set(nxt, true) end) end
+        StealPanel.Refresh()
+    end)
+    StealPanel.lblSort = sortBtn
+
+    -- Steal (sync toggle Auto Steal)
+    StealPanel.rowSteal = topBtn(2, 64, "Steal", function()
+        local newVal = not Heist.on
+        Heist.on = newVal
+        local el = El.steal
+        if el then safe(function() el:Set(newVal, true) end) end
+        StealPanel.Refresh()
+    end)
+
+    -- Filter All/Halloween/Field
+    StealPanel.rowFilter = topBtn(3, 72, StealPanel.filter, function()
+        StealPanel.filter = (StealPanel.filter == "All" and "Halloween")
+            or (StealPanel.filter == "Halloween" and "Field") or "All"
+        StealPanel.Refresh()
+    end)
+
+    -- 4) daftar kartu
+    if not list then
+        list = spNew("ScrollingFrame", {
+            Size = UDim2.new(1, -16, 1, -86), Position = UDim2.new(0, 8, 0, 78),
+            BackgroundTransparency = 1, BorderSizePixel = 0,
+            ScrollBarThickness = 4, CanvasSize = UDim2.new(0, 0, 0, 0),
+        }, root)
+        spNew("UIListLayout", {
+            Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder,
+        }, list)
+        spNew("UIPadding", { PaddingTop = UDim.new(0, 2) }, list)
+    else
+        safe(function()
+            list.Position = UDim2.new(0, 8, 0, 78)
+            list.Size = UDim2.new(1, -16, 1, -86)
+            list.BackgroundTransparency = 1
+            list.ScrollBarThickness = 4
+            for _, d in ipairs(list:GetChildren()) do
+                if d:IsA("UIListLayout") or d:IsA("UIPadding") then d:Destroy() end
+            end
+            local lay = Instance.new("UIListLayout")
+            lay.Padding = UDim.new(0, 6)
+            lay.SortOrder = Enum.SortOrder.LayoutOrder
+            lay.Parent = list
+        end)
+    end
+    StealPanel.list = list
+    StealPanel.built = true
+end
+
+-- aktif/nonaktif (dipakai toggle "Steal Panel" di menu Farm)
+local SP_Wanted = true
+function StealPanel.Enable(on)
+    SP_Wanted = on == true
+    if SP_Wanted then
+        if not StealPanel.built then StealPanel.Build() end
+        -- pulihkan status terbuka (default: terbuka — pola kode asli)
+        if _G.__THORHUB_SP_OPEN ~= false then StealPanel.Show() end
+    else
+        StealPanel.Destroy()
+    end
+end
+function StealPanel.Wanted() return SP_Wanted end
+
+-- refresh berkala saat terbuka (murah — hanya saat open)
+Engine.every(0.6, function()
+    if StealPanel.open then StealPanel.Refresh() end
 end)
 
 --═══════════════════════════════════════════════════════════════════════════════
@@ -2940,6 +3902,7 @@ local tglSteal = tab:AddToggle({
     Callback = function(v) Heist.on = v onTuned() end,
 })
 Store.track("steal.on", reg(tglSteal))
+El.steal = tglSteal -- v5.1: dipakai Steal Panel untuk sync toggle
 
 local ddDelivery = tab:AddDropdown({
     Name = "Delivery",
@@ -2989,6 +3952,7 @@ local ddPrio = tab:AddDropdown({
     Callback = function(v) Heist.priority = v onTuned() end,
 })
 Store.track("steal.priority", ddPrio)
+El.stealPrio = ddPrio -- v5.1: dipakai Steal Panel untuk sync prioritas
 
 local ddStealRar = tab:AddDropdown({
     Name = "Min Rarity",
@@ -3014,7 +3978,7 @@ local ddAreas = tab:AddDropdown({
     Name = "Target Areas",
     Values = areaNameList(),
     Multi = true, Search = true,
-    Description = "Kosong = semua area. Telur base pemain lain selalu dikejar.",
+    Description = "Kosong = semua area. Telur base pemain lain dicuri manual lewat Steal Panel (klik kartunya).",
     Depends = { Element = tglSteal, Value = true },
     Callback = function(list)
         Heist.areas = listToSet(list)
@@ -3056,12 +4020,23 @@ Store.track("steal.dropSafe", tglDropSafe)
 
 local tglAgPanel = tab:AddToggle({
     Name = "Anti Guard Panel",
-    Description = "Chip status guard di kanan-bawah saat Auto Steal aktif.",
+    Description = "Chip status guard di kanan-bawah saat Auto Steal aktif (merah = guard aktif dekat, hijau = aman).",
     Default = true,
     Depends = { Element = tglSteal, Value = true },
     Callback = function(v) Heist.agPanel = v onTuned() end,
 })
 Store.track("steal.agPanel", tglAgPanel)
+
+local tglStealPanel = tab:AddToggle({
+    Name = "Steal Panel",
+    Description = "Panel daftar telur ala kode asli (hijack HUD game: kloning tombol Pets + frame ActivePets). Klik kartu = curi sekarang, ★ = antre prioritas, ▲▼ urut, X batal, Sort = ganti prioritas, Steal = toggle Auto Steal.",
+    Default = true,
+    Callback = function(v)
+        safe(function() StealPanel.Enable(v) end)
+        onTuned()
+    end,
+})
+Store.track("steal.panel", tglStealPanel)
 
 StealBoard = tab:AddCanvas({
     Name = "Hasil Pencurian",
@@ -3070,6 +4045,7 @@ StealBoard = tab:AddCanvas({
         { Type = "Text", Name = "delivered",  Text = "Tersampaikan",    Value = "0" },
         { Type = "Text", Name = "carry",      Text = "Tangan",         Value = "Kosong" },
         { Type = "Text", Name = "targets",    Text = "Target Terlihat", Value = "0" },
+        { Type = "Text", Name = "queue",      Text = "Antrean Panel",   Value = "0" },
         { Type = "Divider" },
         { Type = "Text", Name = "stealstate", Text = "Status Mesin",   Value = "Off" },
         { Type = "Text", Name = "best",       Text = "Curian Terbaik", Value = "-" },
@@ -3815,7 +4791,11 @@ if restored then
     UI.toast("📂 Konfigurasi", "Pengaturan tersimpan berhasil dimuat.", 3)
 end
 
-print("[ThorHub] ⚡ Farm v" .. THORHUB_VERSION .. " siap! (11 seksi tab Farm)")
+-- v5.1: aktifkan Steal Panel sesuai toggle (default ON saat pertama kali,
+-- atau sesuai konfigurasi tersimpan yang barusan di-restore lewat callback)
+safe(function() StealPanel.Enable(StealPanel.Wanted()) end)
+
+print("[ThorHub] ⚡ Farm v" .. THORHUB_VERSION .. " siap! (11 seksi tab Farm + Steal Panel)")
 print("[ThorHub] Library ThorUi v" .. tostring(ThorUi.Version))
 print("[ThorHub] Replika data : " .. (Vault.bound and "TERIKAT" or "belum ketemu (menunggu game)"))
 print("[ThorHub] Katalog aset : " .. (Atlas.dir and "TERIKAT" or "belum ketemu (nilai telur = 0)"))
