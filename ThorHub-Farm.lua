@@ -1,7 +1,7 @@
 --═══════════════════════════════════════════════════════════════════════════════
 --  ⚡ THORHUB — FARM · Steal an Egg
 --  ──────────────────────────────────────────────────────────────────────────────
---  Versi      : 5.1  (Auto Steal diperkuat + STEAL PANEL ala kode asli)
+--  Versi      : 5.2  (Auto Steal diperkuat + STEAL PANEL + loader tangguh)
 --  Library UI : ThorUi  (github.com/dwisetyabudi15581/ThorUi)
 --  Platform   : PC & Mobile (drag bebas, keybind RightControl)
 --
@@ -47,7 +47,7 @@
 --      guard aktif terdekat (dulu teks putih statis).
 --═══════════════════════════════════════════════════════════════════════════════
 
-local THORHUB_VERSION = "5.1"
+local THORHUB_VERSION = "5.2"
 local THORUI_URL      = "https://raw.githubusercontent.com/dwisetyabudi15581/ThorUi/main/ThorUi.lua"
 local CONFIG_FOLDER   = "ThorHub"
 local CONFIG_FILE     = "ThorHub_StealAnEgg_Farm.json"
@@ -3811,17 +3811,29 @@ end
 --  Struktur seksi & nama elemen 1:1 dengan tab Farm kode baru Steal an Egg.
 --═══════════════════════════════════════════════════════════════════════════════
 local function acquireThorUi()
-    for _ = 1, 3 do
+    for attempt = 1, 3 do
         local lib = safe(function()
             local src = game:HttpGet(THORUI_URL)
             if type(src) ~= "string" or #src < 100 then
-                error("download ThorUi gagal / terpotong")
+                error("download ThorUi gagal / terpotong (" .. tostring(type(src) == "string" and #src or type(src)) .. " byte)")
             end
-            return loadstring(src, "@ThorUi.lua")()
+            -- v5.2: fallback loadstring -> load (executor tanpa loadstring tetap jalan)
+            local fn
+            if type(loadstring) == "function" then
+                fn = loadstring(src, "@ThorUi.lua")
+            end
+            if not fn and type(load) == "function" then
+                fn = load(src, "@ThorUi.lua")
+            end
+            if type(fn) ~= "function" then
+                error("ThorUi gagal di-compile (loadstring me-return nil) — " .. #src .. " byte")
+            end
+            return fn()
         end)
         if type(lib) == "table" and type(lib.CreateWindow) == "function" then
             return lib
         end
+        print("[ThorHub] percobaan muat ThorUi #" .. attempt .. " gagal, ulangi...")
         task.wait(1)
     end
     return nil
